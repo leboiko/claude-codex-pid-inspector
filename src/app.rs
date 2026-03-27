@@ -118,6 +118,13 @@ impl App {
         self.forest = build_forest(&processes);
         preserve_expansion(&mut self.forest, &old_expansion);
 
+        // Keep the detail view in sync with live data.
+        if let Some(ref mut detail) = self.selected_detail {
+            if let Some(updated) = processes.iter().find(|p| p.pid == detail.pid) {
+                *detail = updated.clone();
+            }
+        }
+
         self.rebuild_flat_list();
     }
 

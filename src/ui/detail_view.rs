@@ -58,10 +58,12 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
         kv("Parent PID:     ", parent),
         kv("Name:           ", info.name.clone()),
         kv("Status:         ", info.status.clone()),
+        kv("CPU:            ", format!("{:.1}%", info.cpu_usage)),
+        kv("Memory:         ", format_memory(info.memory_bytes)),
         kv("Exe Path:       ", exe),
         kv("Working Dir:    ", cwd),
         kv("Env Vars:       ", info.environ_count.to_string()),
-        kv("Start Time:     ", format!("{} s ago", info.start_time)),
+        kv("Started:        ", format!("epoch {}", info.start_time)),
         kv("Run Time:       ", format_run_time(info.run_time)),
     ];
 
@@ -72,6 +74,21 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
         .border_style(BORDER_STYLE);
 
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Format a byte count as a human-readable string.
+fn format_memory(bytes: u64) -> String {
+    const KB: u64 = 1_024;
+    const MB: u64 = 1_024 * KB;
+    const GB: u64 = 1_024 * MB;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    }
 }
 
 /// Format a run-time in seconds as "Xd Xh Xm Xs".
@@ -106,7 +123,7 @@ pub fn render_detail_view(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Header
-            Constraint::Length(11), // Info table
+            Constraint::Length(13), // Info table
             Constraint::Length(4),  // CPU sparkline
             Constraint::Length(4),  // Memory sparkline
             Constraint::Min(3),     // Command
