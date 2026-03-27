@@ -1,6 +1,17 @@
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use super::info::ProcessInfo;
+
+/// System-wide resource snapshot.
+#[derive(Debug, Clone, Default)]
+pub struct SystemStats {
+    pub cpu_usage: f32,
+    pub total_memory: u64,
+    pub used_memory: u64,
+    pub total_swap: u64,
+    pub used_swap: u64,
+    pub cpu_count: usize,
+}
 
 /// Wraps a [`sysinfo::System`] handle and provides incremental process refresh.
 ///
@@ -36,24 +47,36 @@ impl ProcessScanner {
         let mut system = System::new();
         // Seed CPU delta counters; the returned data is discarded.
         system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
+        system.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
         Self { system }
     }
 
-    /// Refresh all process data and return a snapshot `Vec<ProcessInfo>`.
-    ///
-    /// Dead processes are removed automatically (`remove_dead_processes = true`).
-    /// The returned `Vec` is re-allocated on every call; callers should diff or
-    /// replace their cached list rather than accumulating snapshots.
-    pub fn refresh(&mut self) -> Vec<ProcessInfo> {
+    /// Refresh all process and system data, returning both.
+    pub fn refresh(&mut self) -> (Vec<ProcessInfo>, SystemStats) {
         self.system
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
-
         self.system
+            .refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
+        self.system
+            .refresh_memory_specifics(MemoryRefreshKind::everything());
+
+        let processes = self
+            .system
             .processes()
             .iter()
-            // `pid` is a `&Pid` (reference to newtype); `*pid` dereferences to `Pid`.
             .map(|(&pid, proc)| ProcessInfo::from_sysinfo(pid, proc))
-            .collect()
+            .collect();
+
+        let stats = SystemStats {
+            cpu_usage: self.system.global_cpu_usage(),
+            total_memory: self.system.total_memory(),
+            used_memory: self.system.used_memory(),
+            total_swap: self.system.total_swap(),
+            used_swap: self.system.used_swap(),
+            cpu_count: self.system.cpus().len(),
+        };
+
+        (processes, stats)
     }
 }
 

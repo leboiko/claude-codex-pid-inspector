@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{ActiveView, App};
 use crate::event::{Event, EventHandler};
-use crate::process::{ProcessInfo, ProcessScanner};
+use crate::process::{ProcessInfo, ProcessScanner, SystemStats};
 
 /// Entry point: install hooks, init the terminal, run the app, then restore.
 ///
@@ -75,7 +75,8 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     // than one pending request — if the main loop ticks again before the
     // scanner finishes, try_send simply returns Err(Full) and we skip it.
     let (scan_trigger_tx, scan_trigger_rx) = mpsc::channel::<()>(1);
-    let (scan_result_tx, mut scan_result_rx) = mpsc::unbounded_channel::<Vec<ProcessInfo>>();
+    let (scan_result_tx, mut scan_result_rx) =
+        mpsc::unbounded_channel::<(Vec<ProcessInfo>, SystemStats)>();
 
     // Spawn the scanner on a blocking thread pool thread so the `sysinfo`
     // syscalls never block the async reactor.
@@ -115,12 +116,12 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
                 // Drain all available scan results. In practice there will be
                 // at most one, but draining keeps the channel from backing up
                 // if renders are skipped or the scanner delivers early.
-                let mut latest: Option<Vec<ProcessInfo>> = None;
+                let mut latest: Option<(Vec<ProcessInfo>, SystemStats)> = None;
                 while let Ok(data) = scan_result_rx.try_recv() {
                     latest = Some(data);
                 }
-                if let Some(data) = latest {
-                    app.update_processes(data);
+                if let Some((procs, stats)) = latest {
+                    app.update_processes(procs, stats);
                 }
 
                 terminal.draw(|f| draw(f, &mut app))?;
@@ -152,7 +153,7 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
 /// * `result_tx`   - Sends the resulting `Vec<ProcessInfo>` back to the main loop.
 fn scanner_task(
     mut trigger_rx: mpsc::Receiver<()>,
-    result_tx: mpsc::UnboundedSender<Vec<ProcessInfo>>,
+    result_tx: mpsc::UnboundedSender<(Vec<ProcessInfo>, SystemStats)>,
 ) {
     // ProcessScanner::new() performs an initial seeding refresh internally,
     // so the first call to refresh() will yield meaningful CPU deltas.
@@ -190,11 +191,14 @@ fn scanner_task(
 /// * `f`   - Ratatui frame for this render cycle.
 /// * `app` - Mutable application state (table selection state needs `&mut`).
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
-    let [main_area, footer_area] = Layout::vertical([
+    let [status_area, main_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .areas(f.area());
+
+    ui::render_status_bar(f, status_area, &app.system_stats);
 
     match app.active_view {
         ActiveView::Tree => {

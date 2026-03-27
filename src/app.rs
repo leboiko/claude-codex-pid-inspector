@@ -6,7 +6,7 @@ use ratatui::widgets::TableState;
 use crate::action::Action;
 use crate::process::{
     build_forest, collect_expansion, flatten_visible, preserve_expansion, toggle_expand, FlatEntry,
-    ProcessInfo, ProcessNode,
+    ProcessInfo, ProcessNode, SystemStats,
 };
 
 /// Maximum number of historical CPU/memory samples retained per process.
@@ -98,11 +98,12 @@ pub struct App {
     pub sort_column: SortColumn,
     /// Active sort direction.
     pub sort_direction: SortDirection,
-    /// PID pending kill confirmation. `Some(pid)` means the user pressed kill
-    /// and we are waiting for y/n. `None` means normal operation.
+    /// PID pending kill confirmation.
     pub confirm_kill_pid: Option<u32>,
-    /// Result message from the last kill attempt (shown briefly in the footer).
+    /// Result message from the last kill attempt.
     pub kill_result: Option<String>,
+    /// Latest system-wide resource snapshot.
+    pub system_stats: SystemStats,
 }
 
 impl App {
@@ -202,7 +203,8 @@ impl App {
     /// # Arguments
     ///
     /// * `processes` - Complete flat list of process snapshots from the current refresh.
-    pub fn update_processes(&mut self, processes: Vec<ProcessInfo>) {
+    pub fn update_processes(&mut self, processes: Vec<ProcessInfo>, stats: SystemStats) {
+        self.system_stats = stats;
         // Snapshot expansion state before rebuilding so the user's open/close choices survive.
         let old_expansion = collect_expansion(&self.forest);
 

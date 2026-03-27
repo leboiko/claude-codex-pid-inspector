@@ -12,7 +12,7 @@ pub mod scanner;
 
 pub use filter::ProcessKind;
 pub use info::ProcessInfo;
-pub use scanner::ProcessScanner;
+pub use scanner::{ProcessScanner, SystemStats};
 pub use tree::{
     build_forest, collect_expansion, flatten_visible, preserve_expansion, toggle_expand, FlatEntry,
     ProcessNode,
