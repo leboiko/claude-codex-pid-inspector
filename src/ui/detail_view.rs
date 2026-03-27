@@ -8,7 +8,10 @@ use ratatui::{
 
 use crate::process::info::ProcessInfo;
 
-use super::styles::{BORDER_STYLE, TITLE_STYLE};
+use super::format::{format_duration_full, format_memory};
+use super::styles::{
+    BORDER_STYLE, CLAUDE_SPARKLINE_STYLE, CODEX_SPARKLINE_STYLE, TITLE_STYLE,
+};
 
 /// Style for info-table key labels (e.g. "PID:").
 const KEY_STYLE: Style = Style::new().fg(Color::Yellow);
@@ -36,35 +39,44 @@ fn render_sparkline(f: &mut Frame, area: Rect, title: &str, data: &[u64], style:
     f.render_widget(sparkline, area);
 }
 
+/// Helper: build a `Line` with a styled key and a plain value.
+///
+/// Both `key` and `val` are borrowed for the lifetime `'a`, avoiding
+/// unnecessary allocations at the call site.
+fn kv<'a>(key: &'a str, val: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(key, KEY_STYLE),
+        Span::styled(val, VAL_STYLE),
+    ])
+}
+
 /// Build key-value info lines from a [`ProcessInfo`] and render them as a [`Paragraph`].
 fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
-    /// Helper: build a `Line` with a styled key and a plain value.
-    fn kv<'a>(key: &'a str, val: String) -> Line<'a> {
-        Line::from(vec![
-            Span::styled(key, KEY_STYLE),
-            Span::styled(val, VAL_STYLE),
-        ])
-    }
-
-    let parent = info
-        .parent_pid
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "—".to_string());
-    let exe = info.exe_path.clone().unwrap_or_else(|| "—".to_string());
-    let cwd = info.cwd.clone().unwrap_or_else(|| "—".to_string());
+    // Build all formatted values as owned Strings first, then borrow them
+    // as &str for `kv`. This avoids passing temporaries by value into the
+    // Span, which requires `'static` lifetimes in ratatui's Cow-based API.
+    let parent = info.parent_pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
+    let exe = info.exe_path.as_deref().unwrap_or("—");
+    let cwd = info.cwd.as_deref().unwrap_or("—");
+    let cpu_str = format!("{:.1}%", info.cpu_usage);
+    let mem_str = format_memory(info.memory_bytes);
+    let env_str = info.environ_count.to_string();
+    let pid_str = info.pid.to_string();
+    let started_str = format!("epoch {}", info.start_time);
+    let runtime_str = format_duration_full(info.run_time);
 
     let lines = vec![
-        kv("PID:            ", info.pid.to_string()),
-        kv("Parent PID:     ", parent),
-        kv("Name:           ", info.name.clone()),
-        kv("Status:         ", info.status.clone()),
-        kv("CPU:            ", format!("{:.1}%", info.cpu_usage)),
-        kv("Memory:         ", format_memory(info.memory_bytes)),
+        kv("PID:            ", &pid_str),
+        kv("Parent PID:     ", &parent),
+        kv("Name:           ", &info.name),
+        kv("Status:         ", &info.status),
+        kv("CPU:            ", &cpu_str),
+        kv("Memory:         ", &mem_str),
         kv("Exe Path:       ", exe),
         kv("Working Dir:    ", cwd),
-        kv("Env Vars:       ", info.environ_count.to_string()),
-        kv("Started:        ", format!("epoch {}", info.start_time)),
-        kv("Run Time:       ", format_run_time(info.run_time)),
+        kv("Env Vars:       ", &env_str),
+        kv("Started:        ", &started_str),
+        kv("Run Time:       ", &runtime_str),
     ];
 
     let block = Block::default()
@@ -74,30 +86,6 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
         .border_style(BORDER_STYLE);
 
     f.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-/// Format a byte count as a human-readable string.
-fn format_memory(bytes: u64) -> String {
-    const KB: u64 = 1_024;
-    const MB: u64 = 1_024 * KB;
-    const GB: u64 = 1_024 * MB;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    }
-}
-
-/// Format a run-time in seconds as "Xd Xh Xm Xs".
-fn format_run_time(seconds: u64) -> String {
-    let d = seconds / 86_400;
-    let h = (seconds % 86_400) / 3_600;
-    let m = (seconds % 3_600) / 60;
-    let s = seconds % 60;
-    format!("{}d {}h {}m {}s", d, h, m, s)
 }
 
 /// Render the full detail view for a selected process.
@@ -133,17 +121,9 @@ pub fn render_detail_view(
     render_header(f, sections[0], info);
     render_info_table(f, sections[1], info);
 
-    // Multiply CPU float (0–100) by 10 to keep one decimal of precision as u64.
+    // Multiply CPU float (0–100) by 10 to preserve one decimal of precision as u64.
     let cpu_data: Vec<u64> = cpu_history.iter().map(|&v| (v * 10.0) as u64).collect();
-    render_sparkline(
-        f,
-        sections[2],
-        " CPU Usage % ",
-        &cpu_data,
-        // CLAUDE_COLOR is Color::Rgb(204, 120, 50); duplicate the literal here
-        // because Color is an enum with no accessor methods.
-        Style::new().fg(Color::Rgb(204, 120, 50)),
-    );
+    render_sparkline(f, sections[2], " CPU Usage % ", &cpu_data, CLAUDE_SPARKLINE_STYLE);
 
     // Convert bytes to MB for a readable scale in the sparkline.
     let mem_data: Vec<u64> = mem_history.iter().map(|&b| b / (1024 * 1024)).collect();
@@ -152,8 +132,7 @@ pub fn render_detail_view(
         sections[3],
         " Memory Usage (MB) ",
         &mem_data,
-        // CODEX_COLOR is Color::Rgb(100, 200, 100).
-        Style::new().fg(Color::Rgb(100, 200, 100)),
+        CODEX_SPARKLINE_STYLE,
     );
 
     render_command(f, sections[4], info);

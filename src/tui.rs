@@ -24,9 +24,12 @@ pub fn init() -> color_eyre::Result<Tui> {
     enable_raw_mode()?;
     // EnterAlternateScreen hides the scrollback buffer; EnableMouseCapture lets
     // the app receive mouse events from crossterm.
-    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-    let terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    Ok(terminal)
+    // A single `out` binding is used for both `execute!` and `CrosstermBackend`
+    // so we don't open two separate handles to stdout (which could flush out of
+    // order on some platforms).
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    Ok(Terminal::new(CrosstermBackend::new(out))?)
 }
 
 /// Restore the terminal to its original state.
@@ -38,7 +41,8 @@ pub fn init() -> color_eyre::Result<Tui> {
 ///
 /// Propagates any I/O error from crossterm.
 pub fn restore() -> color_eyre::Result<()> {
-    execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    let mut out = stdout();
+    execute!(out, LeaveAlternateScreen, DisableMouseCapture)?;
     disable_raw_mode()?;
     Ok(())
 }

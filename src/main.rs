@@ -122,7 +122,9 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
                 terminal.draw(|f| draw(f, &mut app))?;
             }
 
-            Event::Resize => {}
+            Event::Resize => {
+                terminal.draw(|f| draw(f, &mut app))?;
+            }
         }
 
         if app.should_quit {

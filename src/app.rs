@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -30,12 +30,18 @@ impl SortColumn {
     ];
 
     pub fn next(self) -> Self {
-        let idx = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        let idx = Self::ALL
+            .iter()
+            .position(|&c| c == self)
+            .expect("SortColumn variant missing from ALL array");
         Self::ALL[(idx + 1) % Self::ALL.len()]
     }
 
     pub fn prev(self) -> Self {
-        let idx = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        let idx = Self::ALL
+            .iter()
+            .position(|&c| c == self)
+            .expect("SortColumn variant missing from ALL array");
         Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 
@@ -134,15 +140,15 @@ impl App {
             }
             Action::SortNext => {
                 self.sort_column = self.sort_column.next();
-                self.apply_sort();
+                self.rebuild_flat_list();
             }
             Action::SortPrev => {
                 self.sort_column = self.sort_column.prev();
-                self.apply_sort();
+                self.rebuild_flat_list();
             }
             Action::SortToggleDirection => {
                 self.sort_direction = self.sort_direction.toggle();
-                self.apply_sort();
+                self.rebuild_flat_list();
             }
         }
     }
@@ -177,6 +183,11 @@ impl App {
 
         self.update_history(&processes);
 
+        // Prune history for processes that no longer exist, preventing unbounded growth.
+        let live_pids: HashSet<u32> = processes.iter().map(|p| p.pid).collect();
+        self.cpu_history.retain(|pid, _| live_pids.contains(pid));
+        self.mem_history.retain(|pid, _| live_pids.contains(pid));
+
         self.forest = build_forest(&processes);
         preserve_expansion(&mut self.forest, &old_expansion);
 
@@ -190,24 +201,19 @@ impl App {
         self.rebuild_flat_list();
     }
 
-    /// Flatten the current forest into `flat_list`, apply sort, and clamp selection.
-    fn rebuild_flat_list(&mut self) {
-        self.flat_list = flatten_visible(&self.forest);
-        self.sort_flat_list();
-        self.clamp_selection();
-    }
-
-    /// Sort the flat list by the active column and direction.
+    /// Sort the forest in place, then flatten into `flat_list`.
     ///
-    /// Root processes are sorted among themselves. Children stay grouped under
-    /// their parent and are sorted within each group.
+    /// Sorting is done on the tree before flattening so sibling order at every
+    /// depth level is correct and parent-child grouping is never violated.
     fn sort_flat_list(&mut self) {
-        sort_entries(&mut self.flat_list, self.sort_column, self.sort_direction);
+        sort_forest(&mut self.forest, self.sort_column, self.sort_direction);
+        self.flat_list = flatten_visible(&self.forest);
     }
 
-    /// Re-sort without rebuilding the forest (used when only the sort key changes).
-    fn apply_sort(&mut self) {
-        self.flat_list = flatten_visible(&self.forest);
+    /// Rebuild and sort `flat_list`, then clamp the selection cursor.
+    ///
+    /// Call this whenever the forest structure or sort parameters change.
+    fn rebuild_flat_list(&mut self) {
         self.sort_flat_list();
         self.clamp_selection();
     }
@@ -284,54 +290,37 @@ impl App {
     }
 }
 
-/// Sort flat entries: roots are sorted among themselves, children stay grouped
-/// under their parent and sorted within each sibling group.
-fn sort_entries(entries: &mut Vec<FlatEntry>, column: SortColumn, direction: SortDirection) {
-    let mut groups: Vec<Vec<FlatEntry>> = Vec::new();
-    for entry in entries.drain(..) {
-        if entry.depth == 0 {
-            groups.push(vec![entry]);
-        } else if let Some(group) = groups.last_mut() {
-            group.push(entry);
-        }
-    }
-
-    groups.sort_by(|a, b| {
-        let cmp = compare_by_column(&a[0].info, &b[0].info, column);
-        match direction {
-            SortDirection::Ascending => cmp,
-            SortDirection::Descending => cmp.reverse(),
-        }
-    });
-
-    for group in &mut groups {
-        if group.len() > 1 {
-            sort_children(&mut group[1..], column, direction);
-        }
-    }
-
-    for group in groups {
-        entries.extend(group);
-    }
-}
-
-/// Sort sibling children at the same depth level.
-fn sort_children(children: &mut [FlatEntry], column: SortColumn, direction: SortDirection) {
-    children.sort_by(|a, b| {
+/// Sort process nodes recursively: siblings at each level are sorted,
+/// preserving the parent-child tree structure.
+///
+/// # Arguments
+///
+/// * `nodes`     - Mutable slice of sibling nodes to sort at this level.
+/// * `column`    - The column to compare on.
+/// * `direction` - Ascending or descending order.
+fn sort_forest(nodes: &mut [ProcessNode], column: SortColumn, direction: SortDirection) {
+    nodes.sort_by(|a, b| {
         let cmp = compare_by_column(&a.info, &b.info, column);
         match direction {
             SortDirection::Ascending => cmp,
             SortDirection::Descending => cmp.reverse(),
         }
     });
+    // Recurse so every sibling group at every depth is sorted.
+    for node in nodes.iter_mut() {
+        sort_forest(&mut node.children, column, direction);
+    }
 }
 
-/// Compare two ProcessInfo values by the given column.
+/// Compare two [`ProcessInfo`] values by the given sort column.
 fn compare_by_column(a: &ProcessInfo, b: &ProcessInfo, column: SortColumn) -> std::cmp::Ordering {
     match column {
         SortColumn::Pid => a.pid.cmp(&b.pid),
         SortColumn::Name => a.name.cmp(&b.name),
-        SortColumn::Cpu => a.cpu_usage.partial_cmp(&b.cpu_usage).unwrap_or(std::cmp::Ordering::Equal),
+        SortColumn::Cpu => a
+            .cpu_usage
+            .partial_cmp(&b.cpu_usage)
+            .unwrap_or(std::cmp::Ordering::Equal),
         SortColumn::Memory => a.memory_bytes.cmp(&b.memory_bytes),
         SortColumn::Status => a.status.cmp(&b.status),
         SortColumn::Uptime => a.run_time.cmp(&b.run_time),

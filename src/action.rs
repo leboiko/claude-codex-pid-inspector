@@ -3,7 +3,7 @@
 /// Every user keystroke and timer tick is translated into one of these variants
 /// before being handed to the update function, keeping input handling decoupled
 /// from business logic.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Action {
     /// Exit the application cleanly.
     Quit,

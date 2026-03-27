@@ -8,8 +8,10 @@ use ratatui::{
 };
 
 use crate::app::{SortColumn, SortDirection};
-use crate::process::{filter::ProcessKind, tree::FlatEntry};
+use crate::process::ProcessKind;
+use crate::process::tree::FlatEntry;
 
+use super::format::{format_duration_compact, format_memory};
 use super::styles::{
     BORDER_STYLE, CHILD_STYLE, CLAUDE_COLOR, CODEX_COLOR, HEADER_STYLE, SELECTED_STYLE, TITLE_STYLE,
 };
@@ -24,44 +26,6 @@ const WIDTHS: [Constraint; 7] = [
     Constraint::Min(30),    // Command
     Constraint::Length(12), // Uptime
 ];
-
-/// Format a byte count as a human-readable string with one decimal place.
-///
-/// # Examples
-///
-/// ```
-/// assert_eq!(format_memory(1_500), "1.5 KB");
-/// assert_eq!(format_memory(2_097_152), "2.0 MB");
-/// ```
-fn format_memory(bytes: u64) -> String {
-    const KB: u64 = 1_024;
-    const MB: u64 = 1_024 * KB;
-    const GB: u64 = 1_024 * MB;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    }
-}
-
-/// Format a duration in seconds as a compact human-readable string.
-///
-/// Produces "Xd Xh Xm" for durations >= 1 hour, or "Xm Xs" otherwise.
-fn format_uptime(seconds: u64) -> String {
-    let days = seconds / 86_400;
-    let hours = (seconds % 86_400) / 3_600;
-    let mins = (seconds % 3_600) / 60;
-    let secs = seconds % 60;
-
-    if days > 0 || hours > 0 {
-        format!("{}d {}h {}m", days, hours, mins)
-    } else {
-        format!("{}m {}s", mins, secs)
-    }
-}
 
 /// Build the indentation and box-drawing connector prefix for a tree entry.
 ///
@@ -108,14 +72,71 @@ fn name_cell(entry: &FlatEntry) -> String {
     format!("{}{}{}", prefix, indicator, entry.info.name)
 }
 
+/// Build the table rows from a flattened process list.
+///
+/// Extracted from [`render_tree_view`] so each concern has a single home.
+fn build_rows(flat_list: &[FlatEntry]) -> Vec<Row<'_>> {
+    flat_list
+        .iter()
+        .map(|entry| {
+            let cmd = entry.info.cmd.join(" ");
+            Row::new([
+                entry.info.pid.to_string(),
+                name_cell(entry),
+                format!("{:.1}%", entry.info.cpu_usage),
+                format_memory(entry.info.memory_bytes),
+                entry.info.status.clone(),
+                cmd,
+                format_duration_compact(entry.info.run_time),
+            ])
+            .style(row_style(entry))
+        })
+        .collect()
+}
+
+/// Build header labels with a sort indicator on the active column.
+///
+/// The `Command` column is not sortable; its slot holds `None` so the arrow
+/// can never appear on it, avoiding the previous double-arrow bug.
+fn header_labels(column: SortColumn, direction: SortDirection) -> Vec<String> {
+    let arrow = match direction {
+        SortDirection::Ascending => " ^",
+        SortDirection::Descending => " v",
+    };
+    let base = ["PID", "Name", "CPU%", "Memory", "Status", "Command", "Uptime"];
+    // `None` marks columns that are not sortable (Command).
+    let sort_cols: [Option<SortColumn>; 7] = [
+        Some(SortColumn::Pid),
+        Some(SortColumn::Name),
+        Some(SortColumn::Cpu),
+        Some(SortColumn::Memory),
+        Some(SortColumn::Status),
+        None, // Command is not sortable
+        Some(SortColumn::Uptime),
+    ];
+    base.iter()
+        .zip(sort_cols.iter())
+        .map(|(label, col_opt)| {
+            // `map_or` returns false when `col_opt` is None, safely skipping unsortable columns.
+            if col_opt.is_some_and(|c| c == column) {
+                format!("{}{}", label, arrow)
+            } else {
+                label.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Render the process tree as a bordered, scrollable [`Table`].
 ///
 /// # Arguments
 ///
-/// * `f`           - Ratatui frame.
-/// * `area`        - Available screen area.
-/// * `flat_list`   - Flattened, ordered list of visible tree entries.
-/// * `table_state` - Mutable selection state (drives highlight and scrollbar).
+/// * `f`              - Ratatui frame.
+/// * `area`           - Available screen area.
+/// * `flat_list`      - Flattened, ordered list of visible tree entries.
+/// * `table_state`    - Mutable selection state (drives highlight and scrollbar).
+/// * `sort_column`    - Currently active sort column.
+/// * `sort_direction` - Current sort direction.
 pub fn render_tree_view(
     f: &mut Frame,
     area: Rect,
@@ -128,22 +149,7 @@ pub fn render_tree_view(
         .style(HEADER_STYLE)
         .bottom_margin(1);
 
-    let rows: Vec<Row> = flat_list
-        .iter()
-        .map(|entry| {
-            let cmd = entry.info.cmd.join(" ");
-            Row::new([
-                entry.info.pid.to_string(),
-                name_cell(entry),
-                format!("{:.1}%", entry.info.cpu_usage),
-                format_memory(entry.info.memory_bytes),
-                entry.info.status.clone(),
-                cmd,
-                format_uptime(entry.info.run_time),
-            ])
-            .style(row_style(entry))
-        })
-        .collect();
+    let rows = build_rows(flat_list);
 
     let block = Block::default()
         .title(" Process Inspector ")
@@ -168,28 +174,4 @@ pub fn render_tree_view(
         area,
         &mut scroll_state,
     );
-}
-
-/// Build header labels with a sort indicator on the active column.
-fn header_labels(column: SortColumn, direction: SortDirection) -> Vec<String> {
-    let arrow = match direction {
-        SortDirection::Ascending => " ^",
-        SortDirection::Descending => " v",
-    };
-    let base = ["PID", "Name", "CPU%", "Memory", "Status", "Command", "Uptime"];
-    let sort_cols = [
-        SortColumn::Pid, SortColumn::Name, SortColumn::Cpu,
-        SortColumn::Memory, SortColumn::Status, SortColumn::Pid, // Command not sortable
-        SortColumn::Uptime,
-    ];
-    base.iter()
-        .zip(sort_cols.iter())
-        .map(|(label, col)| {
-            if *col == column && *label != "Command" {
-                format!("{}{}", label, arrow)
-            } else {
-                label.to_string()
-            }
-        })
-        .collect()
 }

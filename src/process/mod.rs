@@ -10,6 +10,7 @@ pub mod tree;
 /// Live process scanning via `sysinfo`.
 pub mod scanner;
 
+pub use filter::ProcessKind;
 pub use info::ProcessInfo;
 pub use scanner::ProcessScanner;
 pub use tree::{

@@ -61,3 +61,102 @@ pub fn process_kind(info: &ProcessInfo) -> Option<ProcessKind> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::ProcessInfo;
+
+    fn make_info(name: &str, cmd: Vec<&str>, exe: Option<&str>) -> ProcessInfo {
+        ProcessInfo {
+            pid: 1,
+            parent_pid: None,
+            name: name.to_string(),
+            cmd: cmd.into_iter().map(String::from).collect(),
+            exe_path: exe.map(String::from),
+            cwd: None,
+            cpu_usage: 0.0,
+            memory_bytes: 0,
+            status: "Run".to_string(),
+            environ_count: 0,
+            start_time: 0,
+            run_time: 0,
+        }
+    }
+
+    #[test]
+    fn claude_by_name() {
+        let info = make_info("claude", vec!["claude"], None);
+        assert!(is_claude_process(&info));
+        assert!(is_target_process(&info));
+    }
+
+    #[test]
+    fn claude_by_argv0() {
+        let info = make_info("node", vec!["claude"], None);
+        assert!(is_claude_process(&info));
+    }
+
+    #[test]
+    fn claude_by_exe_path() {
+        let info = make_info(
+            "node",
+            vec!["node"],
+            Some("/home/user/.local/share/claude/bin/claude"),
+        );
+        assert!(is_claude_process(&info));
+    }
+
+    #[test]
+    fn claude_by_version_name() {
+        let info = make_info(
+            "2.1.85",
+            vec![],
+            Some("/home/user/.local/share/claude/versions/2.1.85"),
+        );
+        assert!(is_claude_process(&info));
+    }
+
+    #[test]
+    fn not_claude_random_process() {
+        let info = make_info("firefox", vec!["firefox"], Some("/usr/bin/firefox"));
+        assert!(!is_claude_process(&info));
+    }
+
+    #[test]
+    fn codex_by_name() {
+        let info = make_info("codex", vec!["codex"], None);
+        assert!(is_codex_process(&info));
+        assert!(is_target_process(&info));
+    }
+
+    #[test]
+    fn codex_by_argv0() {
+        let info = make_info("node", vec!["codex"], None);
+        assert!(is_codex_process(&info));
+    }
+
+    #[test]
+    fn codex_by_cmd_openai() {
+        let info = make_info("node", vec!["node", "/path/to/@openai/codex/bin"], None);
+        assert!(is_codex_process(&info));
+    }
+
+    #[test]
+    fn codex_by_cmd_js() {
+        let info = make_info("node", vec!["node", "codex.js"], None);
+        assert!(is_codex_process(&info));
+    }
+
+    #[test]
+    fn process_kind_detection() {
+        let claude = make_info("claude", vec!["claude"], None);
+        assert_eq!(process_kind(&claude), Some(ProcessKind::Claude));
+
+        let codex = make_info("codex", vec!["codex"], None);
+        assert_eq!(process_kind(&codex), Some(ProcessKind::Codex));
+
+        let other = make_info("bash", vec!["bash"], None);
+        assert_eq!(process_kind(&other), None);
+    }
+}

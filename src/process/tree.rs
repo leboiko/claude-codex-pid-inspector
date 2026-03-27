@@ -4,7 +4,7 @@ use super::filter::{is_target_process, process_kind, ProcessKind};
 use super::info::ProcessInfo;
 
 /// A node in the process tree, holding one process and its direct children.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcessNode {
     /// Snapshot data for this process.
     pub info: ProcessInfo,
@@ -19,7 +19,7 @@ pub struct ProcessNode {
 }
 
 /// A single row in the flat, scrollable list derived from [`ProcessNode`] trees.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FlatEntry {
     /// Owned snapshot for this row.
     pub info: ProcessInfo,
@@ -73,6 +73,10 @@ pub fn build_forest(processes: &[ProcessInfo]) -> Vec<ProcessNode> {
 }
 
 /// Recursively build a [`ProcessNode`], attaching child subtrees.
+///
+/// Recursion depth is bounded by the OS process tree depth, which is
+/// typically shallow (< 20 levels). No cycle guard is needed because
+/// the kernel guarantees acyclic parent-child relationships.
 fn build_node<'a>(
     info: &'a ProcessInfo,
     children_map: &HashMap<u32, Vec<&'a ProcessInfo>>,
@@ -158,15 +162,12 @@ pub fn toggle_expand(forest: &mut [ProcessNode], target_pid: u32) {
 /// restore the UI state after a data refresh.
 pub fn collect_expansion(forest: &[ProcessNode]) -> HashMap<u32, bool> {
     let mut map = HashMap::new();
-    collect_expansion_inner(forest, &mut map);
-    map
-}
-
-fn collect_expansion_inner(forest: &[ProcessNode], map: &mut HashMap<u32, bool>) {
     for node in forest {
         map.insert(node.info.pid, node.expanded);
-        collect_expansion_inner(&node.children, map);
+        // Recurse into children, merging their entries directly into `map`.
+        map.extend(collect_expansion(&node.children));
     }
+    map
 }
 
 /// Restore expansion states from a previously collected pid → bool map.
@@ -179,5 +180,79 @@ pub fn preserve_expansion(forest: &mut [ProcessNode], old_states: &HashMap<u32, 
             node.expanded = was_expanded;
         }
         preserve_expansion(&mut node.children, old_states);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::ProcessInfo;
+
+    fn proc(pid: u32, parent: Option<u32>, name: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            parent_pid: parent,
+            name: name.to_string(),
+            cmd: vec![name.to_string()],
+            exe_path: None,
+            cwd: None,
+            cpu_usage: 0.0,
+            memory_bytes: 0,
+            status: "Run".to_string(),
+            environ_count: 0,
+            start_time: 0,
+            run_time: 0,
+        }
+    }
+
+    #[test]
+    fn build_forest_finds_roots() {
+        let procs = vec![
+            proc(1, None, "claude"),
+            proc(2, Some(1), "node"),
+            proc(3, None, "bash"),
+        ];
+        let forest = build_forest(&procs);
+        // Only the claude root should appear; bash is not a target process.
+        assert_eq!(forest.len(), 1);
+        assert_eq!(forest[0].info.pid, 1);
+        assert_eq!(forest[0].children.len(), 1);
+        assert_eq!(forest[0].children[0].info.pid, 2);
+    }
+
+    #[test]
+    fn flatten_respects_expansion() {
+        let procs = vec![proc(1, None, "claude"), proc(2, Some(1), "node")];
+        let mut forest = build_forest(&procs);
+        let flat = flatten_visible(&forest);
+        // Both nodes visible when expanded (the default).
+        assert_eq!(flat.len(), 2);
+
+        toggle_expand(&mut forest, 1);
+        let flat = flatten_visible(&forest);
+        // Only the root visible when collapsed.
+        assert_eq!(flat.len(), 1);
+    }
+
+    #[test]
+    fn collect_and_preserve_expansion() {
+        let procs = vec![proc(1, None, "claude"), proc(2, Some(1), "node")];
+        let mut forest = build_forest(&procs);
+        toggle_expand(&mut forest, 1);
+
+        let states = collect_expansion(&forest);
+        assert_eq!(states.get(&1), Some(&false));
+
+        let mut new_forest = build_forest(&procs);
+        preserve_expansion(&mut new_forest, &states);
+        assert!(!new_forest[0].expanded);
+    }
+
+    #[test]
+    fn empty_process_list() {
+        let forest = build_forest(&[]);
+        assert!(forest.is_empty());
+        let flat = flatten_visible(&forest);
+        assert!(flat.is_empty());
     }
 }

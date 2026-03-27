@@ -84,8 +84,10 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(CrosstermEvent::Key(key))) => {
                         // Only forward actual key-press events; ignore release/repeat.
-                        if key.kind == KeyEventKind::Press {
-                            if tx.send(Event::Key(key)).is_err() { break; }
+                        if key.kind == KeyEventKind::Press
+                            && tx.send(Event::Key(key)).is_err()
+                        {
+                            break;
                         }
                     }
                     Some(Ok(CrosstermEvent::Resize(_, _))) => {

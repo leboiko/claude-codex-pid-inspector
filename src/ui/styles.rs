@@ -22,3 +22,9 @@ pub const BORDER_STYLE: Style = Style::new().fg(Color::DarkGray);
 
 /// Style for block/widget titles.
 pub const TITLE_STYLE: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+
+/// Sparkline bar style for Claude root processes (orange).
+pub const CLAUDE_SPARKLINE_STYLE: Style = Style::new().fg(CLAUDE_COLOR);
+
+/// Sparkline bar style for Codex root processes (green).
+pub const CODEX_SPARKLINE_STYLE: Style = Style::new().fg(CODEX_COLOR);

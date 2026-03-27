@@ -5,7 +5,7 @@ use sysinfo::{Pid, Process};
 /// All fields are owned so the struct can be freely moved across threads
 /// or stored without worrying about the lifetime of the underlying `sysinfo`
 /// data structures.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcessInfo {
     /// Numeric process identifier.
     pub pid: u32,
@@ -72,7 +72,7 @@ impl ProcessInfo {
             cwd,
             cpu_usage: proc.cpu_usage(),
             memory_bytes: proc.memory(),
-            status: format!("{:?}", proc.status()),
+            status: proc.status().to_string(),
             environ_count: proc.environ().len(),
             start_time: proc.start_time(),
             run_time: proc.run_time(),
