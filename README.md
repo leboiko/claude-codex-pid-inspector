@@ -53,17 +53,45 @@ and memory over the last 30 samples.
 
 Requires [Rust](https://rustup.rs/) 1.70 or later.
 
+### Install from GitHub (recommended)
+
+This installs an optimized release binary to `~/.cargo/bin/`, which is
+typically already on your `PATH`:
+
 ```sh
-git clone <repo-url>
-cd pid-inspector
-cargo build --release
-# The binary is at ./target/release/pid-inspector
+cargo install --git https://github.com/leboiko/claude-codex-pid-inspector.git
 ```
 
-To install it to your Cargo bin directory:
+### Install from a local clone
 
 ```sh
+git clone https://github.com/leboiko/claude-codex-pid-inspector.git
+cd claude-codex-pid-inspector
 cargo install --path .
+```
+
+`cargo install` builds with `--release` by default, so the binary is
+fully optimized (LTO, single codegen unit, stripped symbols) as
+configured in the `[profile.release]` section of `Cargo.toml`.
+
+### Verify installation
+
+```sh
+pid-inspector --version   # or just: which pid-inspector
+```
+
+If `~/.cargo/bin` is not on your `PATH`, add it:
+
+```sh
+# bash/zsh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Uninstall
+
+```sh
+cargo uninstall pid-inspector
 ```
 
 ---
