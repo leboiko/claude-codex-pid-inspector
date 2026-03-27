@@ -96,7 +96,11 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     loop {
         match event_handler.next().await? {
             Event::Key(key) => {
-                if let Some(action) = App::map_key_to_action(key, &app.active_view) {
+                if let Some(action) = App::map_key_to_action(
+                    key,
+                    &app.active_view,
+                    app.confirm_kill_pid.is_some(),
+                ) {
                     app.handle_action(action);
                 }
             }
@@ -217,5 +221,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    ui::render_footer(f, footer_area, &app.active_view);
+    ui::render_footer(
+        f,
+        footer_area,
+        &app.active_view,
+        app.confirm_kill_pid,
+        app.kill_result.as_deref(),
+    );
 }

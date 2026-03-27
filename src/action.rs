@@ -23,4 +23,10 @@ pub enum Action {
     SortPrev,
     /// Toggle sort direction (ascending / descending).
     SortToggleDirection,
+    /// Request to kill the currently selected process (triggers confirmation).
+    KillRequest,
+    /// Confirm the pending kill.
+    ConfirmKill,
+    /// Cancel the pending kill.
+    CancelKill,
 }

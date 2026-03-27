@@ -98,6 +98,11 @@ pub struct App {
     pub sort_column: SortColumn,
     /// Active sort direction.
     pub sort_direction: SortDirection,
+    /// PID pending kill confirmation. `Some(pid)` means the user pressed kill
+    /// and we are waiting for y/n. `None` means normal operation.
+    pub confirm_kill_pid: Option<u32>,
+    /// Result message from the last kill attempt (shown briefly in the footer).
+    pub kill_result: Option<String>,
 }
 
 impl App {
@@ -114,6 +119,11 @@ impl App {
 
     /// Dispatch an [`Action`] produced by the event loop, mutating state accordingly.
     pub fn handle_action(&mut self, action: Action) {
+        // Clear the kill result message on any action that isn't part of the kill flow.
+        if !matches!(action, Action::KillRequest | Action::ConfirmKill | Action::CancelKill) {
+            self.kill_result = None;
+        }
+
         match action {
             Action::Quit => self.should_quit = true,
             Action::MoveUp => self.move_selection(-1),
@@ -149,6 +159,21 @@ impl App {
             Action::SortToggleDirection => {
                 self.sort_direction = self.sort_direction.toggle();
                 self.rebuild_flat_list();
+            }
+            Action::KillRequest => {
+                let pid = self.selected_pid();
+                if pid.is_some() {
+                    self.confirm_kill_pid = pid;
+                    self.kill_result = None;
+                }
+            }
+            Action::ConfirmKill => {
+                if let Some(pid) = self.confirm_kill_pid.take() {
+                    self.kill_result = Some(kill_process(pid));
+                }
+            }
+            Action::CancelKill => {
+                self.confirm_kill_pid = None;
             }
         }
     }
@@ -218,6 +243,17 @@ impl App {
         self.clamp_selection();
     }
 
+    /// Return the PID of the currently focused process, if any.
+    fn selected_pid(&self) -> Option<u32> {
+        match self.active_view {
+            ActiveView::Tree => {
+                let idx = self.table_state.selected()?;
+                Some(self.flat_list.get(idx)?.info.pid)
+            }
+            ActiveView::Detail => self.selected_detail.as_ref().map(|d| d.pid),
+        }
+    }
+
     /// Clamp the selected row index to valid bounds.
     fn clamp_selection(&mut self) {
         let len = self.flat_list.len();
@@ -263,10 +299,23 @@ impl App {
     ///
     /// * `key`         - The raw key event from crossterm.
     /// * `active_view` - The panel currently in focus; some bindings are view-specific.
-    pub fn map_key_to_action(key: KeyEvent, active_view: &ActiveView) -> Option<Action> {
+    pub fn map_key_to_action(
+        key: KeyEvent,
+        active_view: &ActiveView,
+        confirming_kill: bool,
+    ) -> Option<Action> {
         // Ctrl+C is a universal quit regardless of view or mode.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Action::Quit);
+        }
+
+        // When a kill confirmation is pending, only y/n/Esc are accepted.
+        if confirming_kill {
+            return match key.code {
+                KeyCode::Char('y') => Some(Action::ConfirmKill),
+                KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelKill),
+                _ => None,
+            };
         }
 
         match active_view {
@@ -279,15 +328,41 @@ impl App {
                 KeyCode::Tab => Some(Action::SortNext),
                 KeyCode::BackTab => Some(Action::SortPrev),
                 KeyCode::Char('s') => Some(Action::SortToggleDirection),
+                KeyCode::Char('x') => Some(Action::KillRequest),
                 _ => None,
             },
             ActiveView::Detail => match key.code {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Esc => Some(Action::BackToTree),
+                KeyCode::Char('x') => Some(Action::KillRequest),
                 _ => None,
             },
         }
     }
+}
+
+/// Attempt to kill a process by PID using SIGTERM, falling back to SIGKILL.
+fn kill_process(pid: u32) -> String {
+    use sysinfo::{Pid, Signal, System};
+
+    let sys = System::new();
+    let sysinfo_pid = Pid::from_u32(pid);
+
+    // Try graceful SIGTERM first.
+    if sys.process(sysinfo_pid).is_none() {
+        return format!("PID {} not found", pid);
+    }
+
+    if let Some(proc) = sys.process(sysinfo_pid) {
+        if proc.kill_with(Signal::Term).unwrap_or(false) {
+            return format!("Sent SIGTERM to PID {}", pid);
+        }
+        // SIGTERM failed or unsupported, try SIGKILL.
+        if proc.kill() {
+            return format!("Sent SIGKILL to PID {}", pid);
+        }
+    }
+    format!("Failed to kill PID {} (permission denied?)", pid)
 }
 
 /// Sort process nodes recursively: siblings at each level are sorted,
