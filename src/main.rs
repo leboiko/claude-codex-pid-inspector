@@ -221,11 +221,18 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    ui::render_footer(
-        f,
-        footer_area,
-        &app.active_view,
-        app.confirm_kill_pid,
-        app.kill_result.as_deref(),
-    );
+    ui::render_footer(f, footer_area, &app.active_view);
+
+    // Popups render on top of everything else.
+    if let Some(pid) = app.confirm_kill_pid {
+        let name = app
+            .flat_list
+            .iter()
+            .find(|e| e.info.pid == pid)
+            .map(|e| e.info.name.as_str())
+            .unwrap_or("unknown");
+        ui::render_kill_confirm(f, pid, name);
+    } else if let Some(ref msg) = app.kill_result {
+        ui::render_kill_result(f, msg);
+    }
 }

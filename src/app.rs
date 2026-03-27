@@ -341,28 +341,24 @@ impl App {
     }
 }
 
-/// Attempt to kill a process by PID using SIGTERM, falling back to SIGKILL.
+/// Attempt to kill a process by PID using SIGTERM.
+///
+/// Uses `libc::kill` directly instead of sysinfo, which requires a
+/// fully-refreshed `System` instance just to send a signal.
 fn kill_process(pid: u32) -> String {
-    use sysinfo::{Pid, Signal, System};
-
-    let sys = System::new();
-    let sysinfo_pid = Pid::from_u32(pid);
-
-    // Try graceful SIGTERM first.
-    if sys.process(sysinfo_pid).is_none() {
-        return format!("PID {} not found", pid);
+    let pid_i32 = pid as i32;
+    // SAFETY: kill(2) with SIGTERM is a standard POSIX syscall.
+    let result = unsafe { libc::kill(pid_i32, libc::SIGTERM) };
+    if result == 0 {
+        return format!("Sent SIGTERM to PID {}", pid);
     }
 
-    if let Some(proc) = sys.process(sysinfo_pid) {
-        if proc.kill_with(Signal::Term).unwrap_or(false) {
-            return format!("Sent SIGTERM to PID {}", pid);
-        }
-        // SIGTERM failed or unsupported, try SIGKILL.
-        if proc.kill() {
-            return format!("Sent SIGKILL to PID {}", pid);
-        }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ESRCH) => format!("PID {} not found", pid),
+        Some(libc::EPERM) => format!("Permission denied for PID {}", pid),
+        _ => format!("Failed to kill PID {}: {}", pid, err),
     }
-    format!("Failed to kill PID {} (permission denied?)", pid)
 }
 
 /// Sort process nodes recursively: siblings at each level are sorted,

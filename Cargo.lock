@@ -1055,6 +1055,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "futures",
+ "libc",
  "ratatui",
  "strum 0.26.3",
  "sysinfo",
