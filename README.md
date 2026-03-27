@@ -1,51 +1,57 @@
 # claude-codex-pid-inspector
 
-A terminal UI (TUI) process inspector that watches your system for running
-Claude Code and OpenAI Codex CLI processes, displays them as an expandable
-process tree, and lets you drill into live CPU and memory metrics for any
-individual process.
+A terminal UI (TUI) process inspector for macOS and Linux that monitors
+running Claude Code and OpenAI Codex CLI processes. Displays an
+expandable process tree with live CPU, memory, status, and uptime
+metrics, and lets you drill into any process for sparkline charts and
+full command-line details.
 
 ---
 
 ## Screenshot
 
 ```
-+-----------------------------------------------------------------------+
-|                        Process Inspector                              |
-+--------+----------------------+------+----------+-------+------+------+
-| PID    | Name                 | CPU% | Memory   | Status| Cmd  |Uptime|
-+--------+----------------------+------+----------+-------+------+------+
-| 12345  | ▼ claude             | 2.3% | 143.2 MB | Sleep | ...  | 4m 8s|
-| 12346  |   ├─ node            | 0.1% |  48.0 MB | Sleep | ...  | 4m 8s|
-| 12347  |   └─ node            | 0.0% |  32.4 MB | Sleep | ...  | 4m 7s|
-| 67890  | ▶ codex              | 1.1% |  89.5 MB | Run   | ...  | 1m 2s|
-+--------+----------------------+------+----------+-------+------+------+
-q: Quit  ↑/↓: Navigate  Enter: Details  Space: Expand/Collapse  r: Refresh
++-------------------------------------------------------------------------+
+|                         Process Inspector                               |
++--------+----------------------+--------+----------+--------+-----+------+
+| PID    | Name                 | CPU% v | Memory   | Status | Cmd |Uptime|
++--------+----------------------+--------+----------+--------+-----+------+
+| 27452  | ▼ claude             | 3.3%   | 392.5 MB | Run    | ... | 1d 2h|
+| 67773  |   ├─ npm             | 0.0%   |   3.0 MB | Sleep  | ... | 0m 1s|
+| 74820  |   └─ zsh             | 0.0%   |   3.1 MB | Sleep  | ... | 0m 0s|
+| 17474  | ▼ claude             | 0.1%   | 537.0 MB | Sleep  | ... | 1d 3h|
+| 54879  | ▶ claude             | 0.0%   | 231.4 MB | Sleep  | ... | 2d 0h|
+| 52911  |   codex              | 0.0%   | 316.1 MB | Sleep  | ... | 4d 1h|
++--------+----------------------+--------+----------+--------+-----+------+
+q: Quit  ↑/↓: Navigate  Enter: Details  Space: Expand  Tab: Sort  s: Dir
 ```
 
 The **tree view** lists every detected Claude / Codex root process in
 orange (Claude) or green (Codex), with their child processes indented in
 grey. Pressing `Enter` opens a **detail view** for the selected process,
-showing a full info table alongside live sparkline charts for CPU usage
-and memory over the last 30 samples.
+showing CPU%, memory, full command line, and live sparkline charts over
+the last 30 samples. Columns are sortable by pressing `Tab` to cycle
+through them.
 
 ---
 
 ## Features
 
-- Automatic detection of Claude Code and OpenAI Codex CLI processes using
-  multiple heuristics (name, argv, and exe path).
-- Parent/child process tree built from OS parent-PID relationships, with
-  expand and collapse support.
-- Live refresh every 2 seconds on a background blocking thread, so the
-  async UI reactor is never stalled.
-- Per-process rolling history of the last 30 CPU and memory samples,
-  visualised as sparkline charts in the detail view.
-- Expansion state is preserved across refresh cycles — collapsing a
-  subtree is not reset when new data arrives.
-- Context-sensitive one-line footer showing only the key bindings relevant
-  to the active view.
-- Safe terminal restoration on both clean exit and panic.
+- **Cross-platform** — works on macOS and Linux.
+- **Automatic detection** of Claude Code and OpenAI Codex CLI processes
+  using multiple heuristics (process name, argv[0], exe path).
+- **Process tree** built from OS parent-PID relationships, with
+  expand/collapse support that persists across refresh cycles.
+- **Sortable columns** — sort by PID, name, CPU%, memory, status, or
+  uptime in ascending or descending order.
+- **Live refresh** every 2 seconds on a background blocking thread, so
+  the async UI reactor is never stalled.
+- **Detail view** with per-process info table (CPU%, memory, exe path,
+  working directory, environment variable count) and rolling sparkline
+  charts for CPU and memory history.
+- **Context-sensitive footer** showing only the key bindings relevant to
+  the active view.
+- **Safe terminal restoration** on both clean exit and panic.
 
 ---
 
@@ -109,22 +115,25 @@ is not disturbed) and begins scanning immediately.
 
 #### Tree view
 
-| Key          | Action                              |
-|--------------|-------------------------------------|
-| `q`          | Quit                                |
-| `Ctrl+C`     | Quit (universal)                    |
-| `Up` / `k`   | Move selection up                   |
-| `Down` / `j` | Move selection down                 |
-| `Enter`      | Open detail view for selected row   |
-| `Space`      | Expand / collapse selected node     |
+| Key            | Action                              |
+|----------------|-------------------------------------|
+| `q`            | Quit                                |
+| `Ctrl+C`       | Quit (universal)                    |
+| `Up` / `k`     | Move selection up                   |
+| `Down` / `j`   | Move selection down                 |
+| `Enter`        | Open detail view for selected row   |
+| `Space`        | Expand / collapse selected node     |
+| `Tab`          | Cycle sort column forward           |
+| `Shift+Tab`    | Cycle sort column backward          |
+| `s`            | Toggle sort direction (asc / desc)  |
 
 #### Detail view
 
-| Key    | Action              |
-|--------|---------------------|
-| `Esc`  | Return to tree view |
-| `q`    | Quit                |
-| `Ctrl+C` | Quit (universal)  |
+| Key       | Action              |
+|-----------|---------------------|
+| `Esc`     | Return to tree view |
+| `q`       | Quit                |
+| `Ctrl+C`  | Quit (universal)    |
 
 ---
 
@@ -191,6 +200,7 @@ src/
     detail_view.rs Renders the detail panel: header, info table, CPU
                    sparkline, memory sparkline, and full command line.
     footer.rs      Context-sensitive one-line key-binding hint bar.
+    format.rs      Shared formatting helpers (memory, duration).
     styles.rs      Shared Style / Color constants.
     mod.rs         Public re-exports.
 ```
