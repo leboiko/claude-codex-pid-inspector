@@ -22,6 +22,21 @@ use crate::process::{ProcessInfo, ProcessScanner};
 /// terminal restoration.
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("pid-inspector {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("pid-inspector {}", env!("CARGO_PKG_VERSION"));
+        println!("A TUI process inspector for Claude Code and OpenAI Codex CLI\n");
+        println!("Usage: pid-inspector\n");
+        println!("Options:");
+        println!("  -h, --help     Show this help message");
+        println!("  -V, --version  Print version");
+        return Ok(());
+    }
+
     // Install the panic hook first so that any subsequent panic leaves the
     // terminal in a usable state and prints a formatted diagnostic.
     tui::install_panic_hook();
