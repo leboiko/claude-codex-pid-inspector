@@ -7,6 +7,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::app::{SortColumn, SortDirection};
 use crate::process::{filter::ProcessKind, tree::FlatEntry};
 
 use super::styles::{
@@ -120,12 +121,12 @@ pub fn render_tree_view(
     area: Rect,
     flat_list: &[FlatEntry],
     table_state: &mut TableState,
+    sort_column: SortColumn,
+    sort_direction: SortDirection,
 ) {
-    let header = Row::new([
-        "PID", "Name", "CPU%", "Memory", "Status", "Command", "Uptime",
-    ])
-    .style(HEADER_STYLE)
-    .bottom_margin(1);
+    let header = Row::new(header_labels(sort_column, sort_direction))
+        .style(HEADER_STYLE)
+        .bottom_margin(1);
 
     let rows: Vec<Row> = flat_list
         .iter()
@@ -167,4 +168,28 @@ pub fn render_tree_view(
         area,
         &mut scroll_state,
     );
+}
+
+/// Build header labels with a sort indicator on the active column.
+fn header_labels(column: SortColumn, direction: SortDirection) -> Vec<String> {
+    let arrow = match direction {
+        SortDirection::Ascending => " ^",
+        SortDirection::Descending => " v",
+    };
+    let base = ["PID", "Name", "CPU%", "Memory", "Status", "Command", "Uptime"];
+    let sort_cols = [
+        SortColumn::Pid, SortColumn::Name, SortColumn::Cpu,
+        SortColumn::Memory, SortColumn::Status, SortColumn::Pid, // Command not sortable
+        SortColumn::Uptime,
+    ];
+    base.iter()
+        .zip(sort_cols.iter())
+        .map(|(label, col)| {
+            if *col == column && *label != "Command" {
+                format!("{}{}", label, arrow)
+            } else {
+                label.to_string()
+            }
+        })
+        .collect()
 }

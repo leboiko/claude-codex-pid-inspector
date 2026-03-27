@@ -192,7 +192,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
 
     match app.active_view {
         ActiveView::Tree => {
-            ui::render_tree_view(f, main_area, &app.flat_list, &mut app.table_state);
+            ui::render_tree_view(
+                f, main_area, &app.flat_list, &mut app.table_state,
+                app.sort_column, app.sort_direction,
+            );
         }
         ActiveView::Detail => {
             if let Some(ref info) = app.selected_detail {

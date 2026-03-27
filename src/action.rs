@@ -17,4 +17,10 @@ pub enum Action {
     SelectProcess,
     /// Escape key — return from the detail view back to the process tree.
     BackToTree,
+    /// Cycle sort column forward.
+    SortNext,
+    /// Cycle sort column backward.
+    SortPrev,
+    /// Toggle sort direction (ascending / descending).
+    SortToggleDirection,
 }

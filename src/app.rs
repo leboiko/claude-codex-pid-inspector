@@ -12,6 +12,52 @@ use crate::process::{
 /// Maximum number of historical CPU/memory samples retained per process.
 const HISTORY_LEN: usize = 30;
 
+/// Columns that support sorting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortColumn {
+    #[default]
+    Pid,
+    Name,
+    Cpu,
+    Memory,
+    Status,
+    Uptime,
+}
+
+impl SortColumn {
+    const ALL: [SortColumn; 6] = [
+        Self::Pid, Self::Name, Self::Cpu, Self::Memory, Self::Status, Self::Uptime,
+    ];
+
+    pub fn next(self) -> Self {
+        let idx = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let idx = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+}
+
+/// Sort direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortDirection {
+    Ascending,
+    #[default]
+    Descending,
+}
+
+impl SortDirection {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+}
+
 /// Tracks which top-level panel is currently receiving input and being rendered.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ActiveView {
@@ -42,6 +88,10 @@ pub struct App {
     pub cpu_history: HashMap<u32, VecDeque<f32>>,
     /// Rolling resident-memory history per PID (bytes, up to [`HISTORY_LEN`] samples).
     pub mem_history: HashMap<u32, VecDeque<u64>>,
+    /// Active sort column.
+    pub sort_column: SortColumn,
+    /// Active sort direction.
+    pub sort_direction: SortDirection,
 }
 
 impl App {
@@ -81,6 +131,18 @@ impl App {
             }
             Action::BackToTree => {
                 self.active_view = ActiveView::Tree;
+            }
+            Action::SortNext => {
+                self.sort_column = self.sort_column.next();
+                self.apply_sort();
+            }
+            Action::SortPrev => {
+                self.sort_column = self.sort_column.prev();
+                self.apply_sort();
+            }
+            Action::SortToggleDirection => {
+                self.sort_direction = self.sort_direction.toggle();
+                self.apply_sort();
             }
         }
     }
@@ -128,22 +190,36 @@ impl App {
         self.rebuild_flat_list();
     }
 
-    /// Flatten the current forest into `flat_list` and clamp the selection index.
+    /// Flatten the current forest into `flat_list`, apply sort, and clamp selection.
     fn rebuild_flat_list(&mut self) {
         self.flat_list = flatten_visible(&self.forest);
+        self.sort_flat_list();
+        self.clamp_selection();
+    }
 
+    /// Sort the flat list by the active column and direction.
+    ///
+    /// Root processes are sorted among themselves. Children stay grouped under
+    /// their parent and are sorted within each group.
+    fn sort_flat_list(&mut self) {
+        sort_entries(&mut self.flat_list, self.sort_column, self.sort_direction);
+    }
+
+    /// Re-sort without rebuilding the forest (used when only the sort key changes).
+    fn apply_sort(&mut self) {
+        self.flat_list = flatten_visible(&self.forest);
+        self.sort_flat_list();
+        self.clamp_selection();
+    }
+
+    /// Clamp the selected row index to valid bounds.
+    fn clamp_selection(&mut self) {
         let len = self.flat_list.len();
         if len == 0 {
             self.table_state.select(None);
             return;
         }
-        // Clamp: if a previously selected row index is now past the end (e.g. a process
-        // disappeared), pin it to the last available row.
-        let clamped = self
-            .table_state
-            .selected()
-            .unwrap_or(0)
-            .min(len - 1);
+        let clamped = self.table_state.selected().unwrap_or(0).min(len - 1);
         self.table_state.select(Some(clamped));
     }
 
@@ -194,7 +270,9 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
                 KeyCode::Char(' ') => Some(Action::ToggleExpand),
                 KeyCode::Enter => Some(Action::SelectProcess),
-                // 'r' reserved for manual refresh — no-op until wired up.
+                KeyCode::Tab => Some(Action::SortNext),
+                KeyCode::BackTab => Some(Action::SortPrev),
+                KeyCode::Char('s') => Some(Action::SortToggleDirection),
                 _ => None,
             },
             ActiveView::Detail => match key.code {
@@ -203,5 +281,59 @@ impl App {
                 _ => None,
             },
         }
+    }
+}
+
+/// Sort flat entries: roots are sorted among themselves, children stay grouped
+/// under their parent and sorted within each sibling group.
+fn sort_entries(entries: &mut Vec<FlatEntry>, column: SortColumn, direction: SortDirection) {
+    let mut groups: Vec<Vec<FlatEntry>> = Vec::new();
+    for entry in entries.drain(..) {
+        if entry.depth == 0 {
+            groups.push(vec![entry]);
+        } else if let Some(group) = groups.last_mut() {
+            group.push(entry);
+        }
+    }
+
+    groups.sort_by(|a, b| {
+        let cmp = compare_by_column(&a[0].info, &b[0].info, column);
+        match direction {
+            SortDirection::Ascending => cmp,
+            SortDirection::Descending => cmp.reverse(),
+        }
+    });
+
+    for group in &mut groups {
+        if group.len() > 1 {
+            sort_children(&mut group[1..], column, direction);
+        }
+    }
+
+    for group in groups {
+        entries.extend(group);
+    }
+}
+
+/// Sort sibling children at the same depth level.
+fn sort_children(children: &mut [FlatEntry], column: SortColumn, direction: SortDirection) {
+    children.sort_by(|a, b| {
+        let cmp = compare_by_column(&a.info, &b.info, column);
+        match direction {
+            SortDirection::Ascending => cmp,
+            SortDirection::Descending => cmp.reverse(),
+        }
+    });
+}
+
+/// Compare two ProcessInfo values by the given column.
+fn compare_by_column(a: &ProcessInfo, b: &ProcessInfo, column: SortColumn) -> std::cmp::Ordering {
+    match column {
+        SortColumn::Pid => a.pid.cmp(&b.pid),
+        SortColumn::Name => a.name.cmp(&b.name),
+        SortColumn::Cpu => a.cpu_usage.partial_cmp(&b.cpu_usage).unwrap_or(std::cmp::Ordering::Equal),
+        SortColumn::Memory => a.memory_bytes.cmp(&b.memory_bytes),
+        SortColumn::Status => a.status.cmp(&b.status),
+        SortColumn::Uptime => a.run_time.cmp(&b.run_time),
     }
 }

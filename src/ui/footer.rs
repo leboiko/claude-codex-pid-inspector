@@ -28,7 +28,8 @@ pub fn render_footer(f: &mut Frame, area: Rect, active_view: &ActiveView) {
             ("  ↑/↓", ": Navigate"),
             ("  Enter", ": Details"),
             ("  Space", ": Expand/Collapse"),
-            ("  r", ": Refresh"),
+            ("  Tab/S-Tab", ": Sort Column"),
+            ("  s", ": Sort Dir"),
         ],
         ActiveView::Detail => &[("Esc", ": Back"), ("  q", ": Quit")],
     };
