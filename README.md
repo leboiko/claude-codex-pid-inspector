@@ -10,7 +10,7 @@ full command-line details.
 
 ## Screenshot
 
-![agentop screenshot](https://raw.githubusercontent.com/leboiko/agentop/master/screenshot.png)
+![agentop screenshot](https://raw.githubusercontent.com/leboiko/claude-codex-pid-inspector/master/screenshot.png)
 
 The **tree view** lists every detected Claude / Codex root process in
 orange (Claude) or green (Codex), with their child processes indented in
