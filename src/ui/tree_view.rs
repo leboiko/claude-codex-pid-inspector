@@ -69,7 +69,16 @@ fn name_cell(entry: &FlatEntry) -> String {
     } else {
         ""
     };
-    format!("{}{}{}", prefix, indicator, entry.info.name)
+    let display_name = if entry.is_root {
+        match &entry.kind {
+            Some(ProcessKind::Claude) => "claude",
+            Some(ProcessKind::Codex) => "codex",
+            _ => &entry.info.name,
+        }
+    } else {
+        &entry.info.name
+    };
+    format!("{}{}{}", prefix, indicator, display_name)
 }
 
 /// Build the table rows from a flattened process list.
