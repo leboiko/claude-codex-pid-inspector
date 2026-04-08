@@ -1,4 +1,4 @@
-# claude-codex-pid-inspector
+# agentop
 
 A terminal UI (TUI) process inspector for macOS and Linux that monitors
 running Claude Code and OpenAI Codex CLI processes. Displays an
@@ -10,21 +10,7 @@ full command-line details.
 
 ## Screenshot
 
-```
-+-------------------------------------------------------------------------+
-|                         Process Inspector                               |
-+--------+----------------------+--------+----------+--------+-----+------+
-| PID    | Name                 | CPU% v | Memory   | Status | Cmd |Uptime|
-+--------+----------------------+--------+----------+--------+-----+------+
-| 27452  | ▼ claude             | 3.3%   | 392.5 MB | Run    | ... | 1d 2h|
-| 67773  |   ├─ npm             | 0.0%   |   3.0 MB | Sleep  | ... | 0m 1s|
-| 74820  |   └─ zsh             | 0.0%   |   3.1 MB | Sleep  | ... | 0m 0s|
-| 17474  | ▼ claude             | 0.1%   | 537.0 MB | Sleep  | ... | 1d 3h|
-| 54879  | ▶ claude             | 0.0%   | 231.4 MB | Sleep  | ... | 2d 0h|
-| 52911  |   codex              | 0.0%   | 316.1 MB | Sleep  | ... | 4d 1h|
-+--------+----------------------+--------+----------+--------+-----+------+
-q: Quit  ↑/↓: Navigate  Enter: Details  Space: Expand  Tab: Sort  s: Dir
-```
+![agentop screenshot](screenshot.png)
 
 The **tree view** lists every detected Claude / Codex root process in
 orange (Claude) or green (Codex), with their child processes indented in
@@ -59,20 +45,23 @@ through them.
 
 Requires [Rust](https://rustup.rs/) 1.70 or later.
 
-### Install from GitHub (recommended)
-
-This installs an optimized release binary to `~/.cargo/bin/`, which is
-typically already on your `PATH`:
+### Install from crates.io (recommended)
 
 ```sh
-cargo install --git https://github.com/leboiko/claude-codex-pid-inspector.git
+cargo install agentop
+```
+
+### Install from GitHub
+
+```sh
+cargo install --git https://github.com/leboiko/agentop.git
 ```
 
 ### Install from a local clone
 
 ```sh
-git clone https://github.com/leboiko/claude-codex-pid-inspector.git
-cd claude-codex-pid-inspector
+git clone https://github.com/leboiko/agentop.git
+cd agentop
 cargo install --path .
 ```
 
@@ -83,7 +72,7 @@ configured in the `[profile.release]` section of `Cargo.toml`.
 ### Verify installation
 
 ```sh
-pid-inspector --version   # or just: which pid-inspector
+agentop --version   # or just: which agentop
 ```
 
 If `~/.cargo/bin` is not on your `PATH`, add it:
@@ -97,7 +86,7 @@ source ~/.zshrc
 ### Uninstall
 
 ```sh
-cargo uninstall pid-inspector
+cargo uninstall agentop
 ```
 
 ---
@@ -105,7 +94,7 @@ cargo uninstall pid-inspector
 ## Usage
 
 ```sh
-pid-inspector
+agentop
 ```
 
 The application opens in an alternate screen buffer (your terminal history

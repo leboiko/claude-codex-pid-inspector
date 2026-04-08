@@ -152,7 +152,7 @@ pub fn render_tree_view(
     let rows = build_rows(flat_list);
 
     let block = Block::default()
-        .title(" Process Inspector ")
+        .title(" agentop ")
         .title_style(TITLE_STYLE)
         .borders(Borders::ALL)
         .border_style(BORDER_STYLE);

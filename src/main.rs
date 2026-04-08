@@ -24,13 +24,13 @@ use crate::process::{ProcessInfo, ProcessScanner, SystemStats};
 async fn main() -> color_eyre::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("pid-inspector {}", env!("CARGO_PKG_VERSION"));
+        println!("agentop {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("pid-inspector {}", env!("CARGO_PKG_VERSION"));
+        println!("agentop {}", env!("CARGO_PKG_VERSION"));
         println!("A TUI process inspector for Claude Code and OpenAI Codex CLI\n");
-        println!("Usage: pid-inspector\n");
+        println!("Usage: agentop\n");
         println!("Options:");
         println!("  -h, --help     Show this help message");
         println!("  -V, --version  Print version");
