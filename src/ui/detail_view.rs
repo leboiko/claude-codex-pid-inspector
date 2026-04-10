@@ -13,12 +13,7 @@ use crate::process::display_name;
 use crate::process::info::ProcessInfo;
 
 use super::format::{format_duration_full, format_memory};
-use super::styles::{
-    BORDER_STYLE, CLAUDE_SPARKLINE_STYLE, CODEX_SPARKLINE_STYLE, TITLE_STYLE,
-};
-
-/// Style for info-table key labels (e.g. "PID:").
-const KEY_STYLE: Style = Style::new().fg(Color::Yellow);
+use super::styles::{GraphStyle, Palette};
 
 /// Style for info-table value text.
 const VAL_STYLE: Style = Style::new().fg(Color::White);
@@ -38,6 +33,7 @@ const VAL_STYLE: Style = Style::new().fg(Color::White);
 /// * `y_max`    - Upper bound for the Y axis.
 /// * `y_labels` - Axis tick labels for the Y axis (typically `["0", "max"]`).
 /// * `style`    - Dot color style.
+#[allow(clippy::too_many_arguments)]
 fn render_chart(
     f: &mut Frame,
     area: Rect,
@@ -46,11 +42,21 @@ fn render_chart(
     y_max: f64,
     y_labels: Vec<String>,
     style: Style,
+    graph_style: GraphStyle,
+    palette: &Palette,
 ) {
+    // Swap marker + graph type based on the user's preference. The Chart
+    // widget supports both representations out of the box; we just pick the
+    // right combination so the visual is scatter dots vs. vertical bars.
+    let (marker, graph_type) = match graph_style {
+        GraphStyle::Dots => (Marker::Dot, GraphType::Scatter),
+        GraphStyle::Bars => (Marker::Bar, GraphType::Bar),
+    };
+
     let dataset = Dataset::default()
         .data(points)
-        .marker(Marker::Dot)
-        .graph_type(GraphType::Scatter)
+        .marker(marker)
+        .graph_type(graph_type)
         .style(style);
 
     // X axis spans the full history length so the plot anchors to the right
@@ -61,13 +67,13 @@ fn render_chart(
     let y_axis = Axis::default()
         .bounds([0.0, y_max])
         .labels(y_labels)
-        .style(Style::new().fg(Color::Yellow));
+        .style(palette.label_style());
 
     let block = Block::default()
         .title(title)
-        .title_style(TITLE_STYLE)
+        .title_style(palette.title_style())
         .borders(Borders::ALL)
-        .border_style(BORDER_STYLE);
+        .border_style(palette.border_style());
 
     let chart = Chart::new(vec![dataset])
         .block(block)
@@ -81,9 +87,9 @@ fn render_chart(
 ///
 /// Both `key` and `val` are borrowed for the lifetime `'a`, avoiding
 /// unnecessary allocations at the call site.
-fn kv<'a>(key: &'a str, val: &'a str) -> Line<'a> {
+fn kv<'a>(key: &'a str, val: &'a str, palette: &Palette) -> Line<'a> {
     Line::from(vec![
-        Span::styled(key, KEY_STYLE),
+        Span::styled(key, palette.label_style()),
         Span::styled(val, VAL_STYLE),
     ])
 }
@@ -115,7 +121,7 @@ fn git_branch(cwd: &str) -> Option<String> {
 }
 
 /// Build key-value info lines from a [`ProcessInfo`] and render them as a [`Paragraph`].
-fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
+fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Palette) {
     // Build all formatted values as owned Strings first, then borrow them
     // as &str for `kv`. This avoids passing temporaries by value into the
     // Span, which requires `'static` lifetimes in ratatui's Cow-based API.
@@ -133,23 +139,23 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
     let runtime_str = format_duration_full(info.run_time);
 
     let lines = vec![
-        kv("PID:            ", &pid_str),
-        kv("Parent PID:     ", &parent),
-        kv("Name:           ", display_name(info)),
-        kv("Status:         ", &info.status),
-        kv("Project:        ", project),
-        kv("Git Branch:     ", &branch),
-        kv("Working Dir:    ", cwd),
-        kv("Exe Path:       ", exe),
-        kv("Env Vars:       ", &env_str),
-        kv("Run Time:       ", &runtime_str),
+        kv("PID:            ", &pid_str, palette),
+        kv("Parent PID:     ", &parent, palette),
+        kv("Name:           ", display_name(info), palette),
+        kv("Status:         ", &info.status, palette),
+        kv("Project:        ", project, palette),
+        kv("Git Branch:     ", &branch, palette),
+        kv("Working Dir:    ", cwd, palette),
+        kv("Exe Path:       ", exe, palette),
+        kv("Env Vars:       ", &env_str, palette),
+        kv("Run Time:       ", &runtime_str, palette),
     ];
 
     let block = Block::default()
         .title(" Info ")
-        .title_style(TITLE_STYLE)
+        .title_style(palette.title_style())
         .borders(Borders::ALL)
-        .border_style(BORDER_STYLE);
+        .border_style(palette.border_style());
 
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -172,20 +178,22 @@ pub fn render_detail_view(
     info: &ProcessInfo,
     cpu_history: &[f32],
     mem_history: &[u64],
+    graph_style: GraphStyle,
+    palette: &Palette,
 ) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Header
             Constraint::Length(12), // Info table
-            Constraint::Fill(1),    // CPU sparkline (splits remaining space with memory)
-            Constraint::Fill(1),    // Memory sparkline
+            Constraint::Fill(1),    // CPU chart (splits remaining space with memory)
+            Constraint::Fill(1),    // Memory chart
             Constraint::Length(4),  // Command
         ])
         .split(area);
 
-    render_header(f, sections[0], info);
-    render_info_table(f, sections[1], info);
+    render_header(f, sections[0], info, palette);
+    render_info_table(f, sections[1], info, palette);
 
     // --- CPU chart -----------------------------------------------------------
     let cpu_points: Vec<(f64, f64)> = cpu_history
@@ -193,7 +201,7 @@ pub fn render_detail_view(
         .enumerate()
         .map(|(i, &v)| (i as f64, v as f64))
         .collect();
-    // Observed max, padded by 10% and floored at 1% so the chart doesn't
+    // Observed max, padded by 15% and floored at 1% so the chart doesn't
     // collapse to a flat line when usage is near zero.
     let cpu_observed_max = cpu_history.iter().copied().fold(0.0_f32, f32::max) as f64;
     let cpu_axis_max = (cpu_observed_max * 1.15).max(1.0);
@@ -206,7 +214,9 @@ pub fn render_detail_view(
         &cpu_points,
         cpu_axis_max,
         cpu_labels,
-        CLAUDE_SPARKLINE_STYLE,
+        palette.claude_style(),
+        graph_style,
+        palette,
     );
 
     // --- Memory chart --------------------------------------------------------
@@ -226,31 +236,33 @@ pub fn render_detail_view(
         &mem_points,
         mem_axis_max,
         mem_labels,
-        CODEX_SPARKLINE_STYLE,
+        palette.codex_style(),
+        graph_style,
+        palette,
     );
 
-    render_command(f, sections[4], info);
+    render_command(f, sections[4], info, palette);
 }
 
 /// Render a compact header block showing the process name, PID, and status.
-fn render_header(f: &mut Frame, area: Rect, info: &ProcessInfo) {
+fn render_header(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Palette) {
     let title = format!(" {} — PID {} — {} ", display_name(info), info.pid, info.status);
     let block = Block::default()
         .title(title)
-        .title_style(TITLE_STYLE.add_modifier(Modifier::BOLD))
+        .title_style(palette.title_style().add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
-        .border_style(BORDER_STYLE);
+        .border_style(palette.border_style());
     f.render_widget(block, area);
 }
 
 /// Render the full command line in a wrapped paragraph block.
-fn render_command(f: &mut Frame, area: Rect, info: &ProcessInfo) {
+fn render_command(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Palette) {
     let cmd_text = info.cmd.join(" ");
     let block = Block::default()
         .title(" Command ")
-        .title_style(TITLE_STYLE)
+        .title_style(palette.title_style())
         .borders(Borders::ALL)
-        .border_style(BORDER_STYLE);
+        .border_style(palette.border_style());
 
     f.render_widget(
         Paragraph::new(cmd_text)

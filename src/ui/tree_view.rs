@@ -12,9 +12,7 @@ use crate::process::tree::FlatEntry;
 use crate::process::{display_name, ProcessKind};
 
 use super::format::{format_duration_compact, format_memory};
-use super::styles::{
-    BORDER_STYLE, CHILD_STYLE, CLAUDE_COLOR, CODEX_COLOR, HEADER_STYLE, SELECTED_STYLE, TITLE_STYLE,
-};
+use super::styles::Palette;
 
 /// Column widths matching the spec.
 const WIDTHS: [Constraint; 7] = [
@@ -49,11 +47,11 @@ fn tree_prefix(entry: &FlatEntry) -> String {
 }
 
 /// Return the appropriate row style based on the entry's kind and root status.
-fn row_style(entry: &FlatEntry) -> Style {
+fn row_style(entry: &FlatEntry, palette: &Palette) -> Style {
     match (&entry.kind, entry.is_root) {
-        (Some(ProcessKind::Claude), true) => Style::new().fg(CLAUDE_COLOR),
-        (Some(ProcessKind::Codex), true) => Style::new().fg(CODEX_COLOR),
-        _ => CHILD_STYLE,
+        (Some(ProcessKind::Claude), true) => palette.claude_style(),
+        (Some(ProcessKind::Codex), true) => palette.codex_style(),
+        _ => palette.child_style(),
     }
 }
 
@@ -75,7 +73,7 @@ fn name_cell(entry: &FlatEntry) -> String {
 /// Build the table rows from a flattened process list.
 ///
 /// Extracted from [`render_tree_view`] so each concern has a single home.
-fn build_rows(flat_list: &[FlatEntry]) -> Vec<Row<'_>> {
+fn build_rows<'a>(flat_list: &'a [FlatEntry], palette: &Palette) -> Vec<Row<'a>> {
     flat_list
         .iter()
         .map(|entry| {
@@ -89,7 +87,7 @@ fn build_rows(flat_list: &[FlatEntry]) -> Vec<Row<'_>> {
                 cmd,
                 format_duration_compact(entry.info.run_time),
             ])
-            .style(row_style(entry))
+            .style(row_style(entry, palette))
         })
         .collect()
 }
@@ -144,23 +142,24 @@ pub fn render_tree_view(
     table_state: &mut TableState,
     sort_column: SortColumn,
     sort_direction: SortDirection,
+    palette: &Palette,
 ) {
     let header = Row::new(header_labels(sort_column, sort_direction))
-        .style(HEADER_STYLE)
+        .style(palette.header_style())
         .bottom_margin(1);
 
-    let rows = build_rows(flat_list);
+    let rows = build_rows(flat_list, palette);
 
     let block = Block::default()
         .title(" agentop ")
-        .title_style(TITLE_STYLE)
+        .title_style(palette.title_style())
         .borders(Borders::ALL)
-        .border_style(BORDER_STYLE);
+        .border_style(palette.border_style());
 
     let table = Table::new(rows, WIDTHS)
         .header(header)
         .block(block)
-        .row_highlight_style(SELECTED_STYLE)
+        .row_highlight_style(palette.selected_style())
         .highlight_symbol("> ");
 
     // Render the table with stateful selection.

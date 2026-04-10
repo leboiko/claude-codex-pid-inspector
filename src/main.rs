@@ -101,6 +101,7 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
                     key,
                     &app.active_view,
                     app.confirm_kill_pid.is_some(),
+                    app.config_popup.is_some(),
                 ) {
                     app.handle_action(action);
                 }
@@ -198,13 +199,15 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     ])
     .areas(f.area());
 
+    let palette = &app.palette;
+
     ui::render_status_bar(f, status_area, &app.system_stats);
 
     match app.active_view {
         ActiveView::Tree => {
             ui::render_tree_view(
                 f, main_area, &app.flat_list, &mut app.table_state,
-                app.sort_column, app.sort_direction,
+                app.sort_column, app.sort_direction, palette,
             );
         }
         ActiveView::Detail => {
@@ -220,23 +223,35 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                     .get(&info.pid)
                     .map(|d| d.iter().copied().collect())
                     .unwrap_or_default();
-                ui::render_detail_view(f, main_area, info, &cpu_hist, &mem_hist);
+                ui::render_detail_view(
+                    f,
+                    main_area,
+                    info,
+                    &cpu_hist,
+                    &mem_hist,
+                    app.graph_style,
+                    palette,
+                );
             }
         }
     }
 
-    ui::render_footer(f, footer_area, &app.active_view);
+    ui::render_footer(f, footer_area, &app.active_view, palette);
 
-    // Popups render on top of everything else.
-    if let Some(pid) = app.confirm_kill_pid {
+    // Popups render on top of everything else. Config popup takes precedence
+    // over the kill popups, though in practice they can't be open at the same
+    // time because the key router swallows input when either is active.
+    if let Some(ref config_state) = app.config_popup {
+        ui::render_config_popup(f, config_state, app.graph_style, app.theme, palette);
+    } else if let Some(pid) = app.confirm_kill_pid {
         let name = app
             .flat_list
             .iter()
             .find(|e| e.info.pid == pid)
             .map(|e| display_name(&e.info))
             .unwrap_or("unknown");
-        ui::render_kill_confirm(f, pid, name);
+        ui::render_kill_confirm(f, pid, name, palette);
     } else if let Some(ref msg) = app.kill_result {
-        ui::render_kill_result(f, msg);
+        ui::render_kill_result(f, msg, palette);
     }
 }

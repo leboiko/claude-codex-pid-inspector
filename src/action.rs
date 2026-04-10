@@ -29,4 +29,14 @@ pub enum Action {
     ConfirmKill,
     /// Cancel the pending kill.
     CancelKill,
+    /// Open the config popup (if closed) or close it (if open).
+    ToggleConfig,
+    /// Move the config popup cursor up one row.
+    ConfigUp,
+    /// Move the config popup cursor down one row.
+    ConfigDown,
+    /// Apply the currently highlighted config popup option.
+    ConfigSelect,
+    /// Close the config popup without applying anything new.
+    CloseConfig,
 }

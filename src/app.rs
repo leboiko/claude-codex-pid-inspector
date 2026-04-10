@@ -8,6 +8,7 @@ use crate::process::{
     build_forest, collect_expansion, flatten_visible, preserve_expansion, toggle_expand, FlatEntry,
     ProcessInfo, ProcessNode, SystemStats,
 };
+use crate::ui::styles::{GraphStyle, Palette, Theme};
 
 /// Maximum number of historical CPU/memory samples retained per process.
 ///
@@ -77,6 +78,45 @@ pub enum ActiveView {
     Detail,
 }
 
+/// Transient state for the settings popup.
+///
+/// The popup exposes two categories of options — `Graph Style` and `Theme` —
+/// as a single flat list so Up/Down navigation is trivial. [`Self::SECTIONS`]
+/// describes the list layout used by both the handler and the renderer.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigPopupState {
+    /// Currently highlighted row in the flat option list.
+    pub cursor: usize,
+}
+
+impl ConfigPopupState {
+    /// Ordered sections and the option count for each.
+    ///
+    /// `(section label, option count)`. The flat cursor index maps into this
+    /// layout so row 0 is the first option of the first section.
+    pub const SECTIONS: &'static [(&'static str, usize)] = &[
+        ("Graph Style", GraphStyle::ALL.len()),
+        ("Theme", Theme::ALL.len()),
+    ];
+
+    /// Total number of selectable rows across all sections.
+    pub fn total_rows() -> usize {
+        Self::SECTIONS.iter().map(|(_, n)| n).sum()
+    }
+
+    /// Move the cursor up one row, wrapping at the top.
+    pub fn move_up(&mut self) {
+        let total = Self::total_rows();
+        self.cursor = (self.cursor + total - 1) % total;
+    }
+
+    /// Move the cursor down one row, wrapping at the bottom.
+    pub fn move_down(&mut self) {
+        let total = Self::total_rows();
+        self.cursor = (self.cursor + 1) % total;
+    }
+}
+
 /// Central application state. All mutations flow through [`App::handle_action`]
 /// or [`App::update_processes`], keeping the state machine easy to reason about.
 #[derive(Debug, Default)]
@@ -107,6 +147,14 @@ pub struct App {
     pub kill_result: Option<String>,
     /// Latest system-wide resource snapshot.
     pub system_stats: SystemStats,
+    /// Active visual theme. Changing this regenerates `palette`.
+    pub theme: Theme,
+    /// Cached style palette derived from `theme`, passed to every renderer.
+    pub palette: Palette,
+    /// Active graph style for the detail view (dots vs bars).
+    pub graph_style: GraphStyle,
+    /// Settings popup state; `None` when the popup is closed.
+    pub config_popup: Option<ConfigPopupState>,
 }
 
 impl App {
@@ -179,6 +227,55 @@ impl App {
             Action::CancelKill => {
                 self.confirm_kill_pid = None;
             }
+            Action::ToggleConfig => {
+                if self.config_popup.is_some() {
+                    self.config_popup = None;
+                } else {
+                    self.config_popup = Some(ConfigPopupState::default());
+                }
+            }
+            Action::ConfigUp => {
+                if let Some(popup) = self.config_popup.as_mut() {
+                    popup.move_up();
+                }
+            }
+            Action::ConfigDown => {
+                if let Some(popup) = self.config_popup.as_mut() {
+                    popup.move_down();
+                }
+            }
+            Action::ConfigSelect => {
+                if let Some(popup) = self.config_popup.as_ref() {
+                    self.apply_config_selection(popup.cursor);
+                }
+            }
+            Action::CloseConfig => {
+                self.config_popup = None;
+            }
+        }
+    }
+
+    /// Apply the option at the given flat cursor index to the live app state.
+    ///
+    /// The layout is driven by [`ConfigPopupState::SECTIONS`] so adding a new
+    /// section or option does not require touching this function's arm order.
+    fn apply_config_selection(&mut self, cursor: usize) {
+        let mut offset = 0;
+        // Section 0: graph style.
+        let graph_count = GraphStyle::ALL.len();
+        if cursor < offset + graph_count {
+            self.graph_style = GraphStyle::ALL[cursor - offset];
+            return;
+        }
+        offset += graph_count;
+
+        // Section 1: theme. Regenerate the palette so render functions
+        // immediately pick up the new colors.
+        let theme_count = Theme::ALL.len();
+        if cursor < offset + theme_count {
+            let theme = Theme::ALL[cursor - offset];
+            self.theme = theme;
+            self.palette = Palette::from_theme(theme);
         }
     }
 
@@ -308,10 +405,24 @@ impl App {
         key: KeyEvent,
         active_view: &ActiveView,
         confirming_kill: bool,
+        config_open: bool,
     ) -> Option<Action> {
         // Ctrl+C is a universal quit regardless of view or mode.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Action::Quit);
+        }
+
+        // Config popup captures all input when open. 'c' toggles it closed;
+        // Esc also closes without applying a new selection.
+        if config_open {
+            return match key.code {
+                KeyCode::Up | KeyCode::Char('k') => Some(Action::ConfigUp),
+                KeyCode::Down | KeyCode::Char('j') => Some(Action::ConfigDown),
+                KeyCode::Enter => Some(Action::ConfigSelect),
+                KeyCode::Esc | KeyCode::Char('c') => Some(Action::CloseConfig),
+                KeyCode::Char('q') => Some(Action::Quit),
+                _ => None,
+            };
         }
 
         // When a kill confirmation is pending, only y/n/Esc are accepted.
@@ -334,12 +445,14 @@ impl App {
                 KeyCode::BackTab => Some(Action::SortPrev),
                 KeyCode::Char('s') => Some(Action::SortToggleDirection),
                 KeyCode::Char('x') => Some(Action::KillRequest),
+                KeyCode::Char('c') => Some(Action::ToggleConfig),
                 _ => None,
             },
             ActiveView::Detail => match key.code {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Esc => Some(Action::BackToTree),
                 KeyCode::Char('x') => Some(Action::KillRequest),
+                KeyCode::Char('c') => Some(Action::ToggleConfig),
                 _ => None,
             },
         }
