@@ -1,4 +1,5 @@
 use ratatui::style::{Color, Modifier, Style};
+use serde::{Deserialize, Serialize};
 
 /// Selectable color themes.
 ///
@@ -6,7 +7,8 @@ use ratatui::style::{Color, Modifier, Style};
 /// every renderer. Semantic colors (e.g. red-for-warning in the kill popup,
 /// green/yellow/red thresholds in the status bar) are NOT themed — only the
 /// neutral UI chrome and the Claude/Codex brand accents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Theme {
     #[default]
     Default,
@@ -29,7 +31,8 @@ impl Theme {
 }
 
 /// Style of the time-series charts in the detail view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GraphStyle {
     /// Scatter plot with dot markers (ratatui `GraphType::Scatter` + `Marker::Dot`).
     #[default]

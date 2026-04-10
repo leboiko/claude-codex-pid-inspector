@@ -1,6 +1,6 @@
 [package]
 name = "agentop"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "A TUI process inspector for Claude Code and OpenAI Codex CLI — like top for AI coding agents"
 license = "MIT"
@@ -17,6 +17,9 @@ color-eyre = "0.6"
 strum = { version = "0.26", features = ["derive"] }
 futures = "0.3"
 libc = "0.2"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
+dirs = "6.0.0"
 
 [profile.release]
 codegen-units = 1

@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::action::Action;
+use crate::config::Config;
 use crate::process::{
     build_forest, collect_expansion, flatten_visible, preserve_expansion, toggle_expand, FlatEntry,
     ProcessInfo, ProcessNode, SystemStats,
@@ -159,14 +160,36 @@ pub struct App {
 
 impl App {
     /// Create a new [`App`] with sensible defaults and row 0 pre-selected.
+    ///
+    /// Persisted settings are loaded from
+    /// `$XDG_CONFIG_HOME/agentop/config.toml` (or the platform equivalent)
+    /// and applied to `theme` / `graph_style`. If no config file exists the
+    /// defaults defined by the enum `Default` impls are used.
     pub fn new() -> Self {
         let mut table_state = TableState::default();
         // Pre-select the first row so the cursor is always visible from the start.
         table_state.select(Some(0));
+
+        let config = Config::load();
+        let palette = Palette::from_theme(config.theme);
+
         Self {
             table_state,
+            theme: config.theme,
+            graph_style: config.graph_style,
+            palette,
             ..Default::default()
         }
+    }
+
+    /// Write the currently-applied settings to disk. Called whenever the
+    /// user changes a setting via the config popup.
+    fn persist_config(&self) {
+        Config {
+            theme: self.theme,
+            graph_style: self.graph_style,
+        }
+        .save();
     }
 
     /// Dispatch an [`Action`] produced by the event loop, mutating state accordingly.
@@ -259,12 +282,15 @@ impl App {
     ///
     /// The layout is driven by [`ConfigPopupState::SECTIONS`] so adding a new
     /// section or option does not require touching this function's arm order.
+    ///
+    /// Writes the updated settings to disk so they persist across restarts.
     fn apply_config_selection(&mut self, cursor: usize) {
         let mut offset = 0;
         // Section 0: graph style.
         let graph_count = GraphStyle::ALL.len();
         if cursor < offset + graph_count {
             self.graph_style = GraphStyle::ALL[cursor - offset];
+            self.persist_config();
             return;
         }
         offset += graph_count;
@@ -276,6 +302,7 @@ impl App {
             let theme = Theme::ALL[cursor - offset];
             self.theme = theme;
             self.palette = Palette::from_theme(theme);
+            self.persist_config();
         }
     }
 
