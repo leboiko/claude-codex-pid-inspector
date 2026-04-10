@@ -62,6 +62,20 @@ pub fn process_kind(info: &ProcessInfo) -> Option<ProcessKind> {
     }
 }
 
+/// Returns the user-facing display name for a process.
+///
+/// Claude Code and Codex CLI are Node.js apps, so `sysinfo` reports their
+/// process name as `"node"`. This helper returns the friendly name
+/// (`"claude"` / `"codex"`) for detected target processes, falling back to
+/// the raw OS name for everything else.
+pub fn display_name(info: &ProcessInfo) -> &str {
+    match process_kind(info) {
+        Some(ProcessKind::Claude) => "claude",
+        Some(ProcessKind::Codex) => "codex",
+        None => &info.name,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{ActiveView, App};
 use crate::event::{Event, EventHandler};
-use crate::process::{ProcessInfo, ProcessScanner, SystemStats};
+use crate::process::{display_name, ProcessInfo, ProcessScanner, SystemStats};
 
 /// Entry point: install hooks, init the terminal, run the app, then restore.
 ///
@@ -233,7 +233,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
             .flat_list
             .iter()
             .find(|e| e.info.pid == pid)
-            .map(|e| e.info.name.as_str())
+            .map(|e| display_name(&e.info))
             .unwrap_or("unknown");
         ui::render_kill_confirm(f, pid, name);
     } else if let Some(ref msg) = app.kill_result {

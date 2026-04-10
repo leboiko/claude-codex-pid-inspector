@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::process::display_name;
 use crate::process::info::ProcessInfo;
 
 use super::format::{format_duration_full, format_memory};
@@ -68,7 +69,7 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
     let lines = vec![
         kv("PID:            ", &pid_str),
         kv("Parent PID:     ", &parent),
-        kv("Name:           ", &info.name),
+        kv("Name:           ", display_name(info)),
         kv("Status:         ", &info.status),
         kv("CPU:            ", &cpu_str),
         kv("Memory:         ", &mem_str),
@@ -140,7 +141,7 @@ pub fn render_detail_view(
 
 /// Render a compact header block showing the process name, PID, and status.
 fn render_header(f: &mut Frame, area: Rect, info: &ProcessInfo) {
-    let title = format!(" {} — PID {} — {} ", info.name, info.pid, info.status);
+    let title = format!(" {} — PID {} — {} ", display_name(info), info.pid, info.status);
     let block = Block::default()
         .title(title)
         .title_style(TITLE_STYLE.add_modifier(Modifier::BOLD))

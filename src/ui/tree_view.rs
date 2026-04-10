@@ -8,8 +8,8 @@ use ratatui::{
 };
 
 use crate::app::{SortColumn, SortDirection};
-use crate::process::ProcessKind;
 use crate::process::tree::FlatEntry;
+use crate::process::{display_name, ProcessKind};
 
 use super::format::{format_duration_compact, format_memory};
 use super::styles::{
@@ -69,16 +69,7 @@ fn name_cell(entry: &FlatEntry) -> String {
     } else {
         ""
     };
-    let display_name = if entry.is_root {
-        match &entry.kind {
-            Some(ProcessKind::Claude) => "claude",
-            Some(ProcessKind::Codex) => "codex",
-            _ => &entry.info.name,
-        }
-    } else {
-        &entry.info.name
-    };
-    format!("{}{}{}", prefix, indicator, display_name)
+    format!("{}{}{}", prefix, indicator, display_name(&entry.info))
 }
 
 /// Build the table rows from a flattened process list.
