@@ -3,8 +3,9 @@ use std::path::Path;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, RenderDirection, Sparkline, Wrap},
+    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Wrap},
     Frame,
 };
 
@@ -22,30 +23,58 @@ const KEY_STYLE: Style = Style::new().fg(Color::Yellow);
 /// Style for info-table value text.
 const VAL_STYLE: Style = Style::new().fg(Color::White);
 
-/// Render a labeled sparkline chart inside a bordered block.
+/// Render a time-series chart with dot markers inside a bordered block.
+///
+/// The X axis is the sample index (oldest on the left, newest on the right)
+/// and the Y axis auto-scales from 0 to the observed maximum, with the max
+/// value shown as a label in the top-left corner of the plot area.
 ///
 /// # Arguments
 ///
-/// * `f`     - Ratatui frame.
-/// * `area`  - Target area.
-/// * `title` - Block title string.
-/// * `data`  - Series of u64 data points (most-recent last).
-/// * `style` - Bar color style for the sparkline.
-fn render_sparkline(f: &mut Frame, area: Rect, title: &str, data: &[u64], style: Style) {
+/// * `f`        - Ratatui frame.
+/// * `area`     - Target area.
+/// * `title`    - Block title (usually contains the current value).
+/// * `points`   - Series of `(x, y)` data points.
+/// * `y_max`    - Upper bound for the Y axis.
+/// * `y_labels` - Axis tick labels for the Y axis (typically `["0", "max"]`).
+/// * `style`    - Dot color style.
+fn render_chart(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    points: &[(f64, f64)],
+    y_max: f64,
+    y_labels: Vec<String>,
+    style: Style,
+) {
+    let dataset = Dataset::default()
+        .data(points)
+        .marker(Marker::Dot)
+        .graph_type(GraphType::Scatter)
+        .style(style);
+
+    // X axis spans the full history length so the plot anchors to the right
+    // edge regardless of how many samples have been collected so far.
+    let x_max = (points.len().saturating_sub(1)).max(1) as f64;
+    let x_axis = Axis::default().bounds([0.0, x_max]);
+
+    let y_axis = Axis::default()
+        .bounds([0.0, y_max])
+        .labels(y_labels)
+        .style(Style::new().fg(Color::Yellow));
+
     let block = Block::default()
         .title(title)
         .title_style(TITLE_STYLE)
         .borders(Borders::ALL)
         .border_style(BORDER_STYLE);
 
-    // Render right-to-left so the most recent sample is anchored to the right
-    // edge and history scrolls off to the left as it ages.
-    let sparkline = Sparkline::default()
+    let chart = Chart::new(vec![dataset])
         .block(block)
-        .data(data)
-        .style(style)
-        .direction(RenderDirection::RightToLeft);
-    f.render_widget(sparkline, area);
+        .x_axis(x_axis)
+        .y_axis(y_axis);
+
+    f.render_widget(chart, area);
 }
 
 /// Helper: build a `Line` with a styled key and a plain value.
@@ -158,19 +187,45 @@ pub fn render_detail_view(
     render_header(f, sections[0], info);
     render_info_table(f, sections[1], info);
 
-    // Multiply CPU float (0–100) by 10 to preserve one decimal of precision as u64.
-    let cpu_data: Vec<u64> = cpu_history.iter().map(|&v| (v * 10.0) as u64).collect();
-    let cpu_title = format!(" CPU Usage — {:.1}% ", info.cpu_usage);
-    render_sparkline(f, sections[2], &cpu_title, &cpu_data, CLAUDE_SPARKLINE_STYLE);
+    // --- CPU chart -----------------------------------------------------------
+    let cpu_points: Vec<(f64, f64)> = cpu_history
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i as f64, v as f64))
+        .collect();
+    // Observed max, padded by 10% and floored at 1% so the chart doesn't
+    // collapse to a flat line when usage is near zero.
+    let cpu_observed_max = cpu_history.iter().copied().fold(0.0_f32, f32::max) as f64;
+    let cpu_axis_max = (cpu_observed_max * 1.15).max(1.0);
+    let cpu_labels = vec!["0".to_string(), format!("{:.1}%", cpu_observed_max)];
+    let cpu_title = format!(" cpu {:.2}% ", info.cpu_usage);
+    render_chart(
+        f,
+        sections[2],
+        &cpu_title,
+        &cpu_points,
+        cpu_axis_max,
+        cpu_labels,
+        CLAUDE_SPARKLINE_STYLE,
+    );
 
-    // Convert bytes to MB for a readable scale in the sparkline.
-    let mem_data: Vec<u64> = mem_history.iter().map(|&b| b / (1024 * 1024)).collect();
-    let mem_title = format!(" Memory Usage — {} ", format_memory(info.memory_bytes));
-    render_sparkline(
+    // --- Memory chart --------------------------------------------------------
+    let mem_points: Vec<(f64, f64)> = mem_history
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| (i as f64, b as f64 / (1024.0 * 1024.0)))
+        .collect();
+    let mem_observed_max = mem_history.iter().copied().max().unwrap_or(0) as f64 / (1024.0 * 1024.0);
+    let mem_axis_max = (mem_observed_max * 1.15).max(1.0);
+    let mem_labels = vec!["0".to_string(), format!("{:.1} MB", mem_observed_max)];
+    let mem_title = format!(" memory {} ", format_memory(info.memory_bytes));
+    render_chart(
         f,
         sections[3],
         &mem_title,
-        &mem_data,
+        &mem_points,
+        mem_axis_max,
+        mem_labels,
         CODEX_SPARKLINE_STYLE,
     );
 
