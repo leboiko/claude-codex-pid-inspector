@@ -10,7 +10,10 @@ use crate::process::{
 };
 
 /// Maximum number of historical CPU/memory samples retained per process.
-const HISTORY_LEN: usize = 30;
+///
+/// At the default 2-second tick rate this is ~10 minutes of history,
+/// enough to fill the sparkline chart on any realistic terminal width.
+const HISTORY_LEN: usize = 300;
 
 /// Columns that support sorting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

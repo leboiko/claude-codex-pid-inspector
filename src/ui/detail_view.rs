@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Sparkline, Wrap},
+    widgets::{Block, Borders, Paragraph, RenderDirection, Sparkline, Wrap},
     Frame,
 };
 
@@ -38,7 +38,13 @@ fn render_sparkline(f: &mut Frame, area: Rect, title: &str, data: &[u64], style:
         .borders(Borders::ALL)
         .border_style(BORDER_STYLE);
 
-    let sparkline = Sparkline::default().block(block).data(data).style(style);
+    // Render right-to-left so the most recent sample is anchored to the right
+    // edge and history scrolls off to the left as it ages.
+    let sparkline = Sparkline::default()
+        .block(block)
+        .data(data)
+        .style(style)
+        .direction(RenderDirection::RightToLeft);
     f.render_widget(sparkline, area);
 }
 
