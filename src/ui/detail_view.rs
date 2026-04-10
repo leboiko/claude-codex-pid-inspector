@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -51,6 +53,32 @@ fn kv<'a>(key: &'a str, val: &'a str) -> Line<'a> {
     ])
 }
 
+/// Extract the basename of a path as a `&str`, falling back to `"—"`.
+fn basename(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("—")
+}
+
+/// Read the current branch name from a `.git/HEAD` file inside `cwd`.
+///
+/// Returns `None` if the directory is not a git repo or the HEAD file
+/// can't be parsed. Handles both symbolic refs (`ref: refs/heads/master`)
+/// and detached HEAD (returns the short SHA).
+fn git_branch(cwd: &str) -> Option<String> {
+    let head = std::fs::read_to_string(Path::new(cwd).join(".git/HEAD")).ok()?;
+    let trimmed = head.trim();
+    if let Some(rest) = trimmed.strip_prefix("ref: refs/heads/") {
+        Some(rest.to_string())
+    } else if trimmed.len() >= 7 {
+        // Detached HEAD: show short SHA.
+        Some(format!("({})", &trimmed[..7]))
+    } else {
+        None
+    }
+}
+
 /// Build key-value info lines from a [`ProcessInfo`] and render them as a [`Paragraph`].
 fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
     // Build all formatted values as owned Strings first, then borrow them
@@ -59,11 +87,14 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
     let parent = info.parent_pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
     let exe = info.exe_path.as_deref().unwrap_or("—");
     let cwd = info.cwd.as_deref().unwrap_or("—");
-    let cpu_str = format!("{:.1}%", info.cpu_usage);
-    let mem_str = format_memory(info.memory_bytes);
+    let project = info.cwd.as_deref().map(basename).unwrap_or("—");
+    let branch = info
+        .cwd
+        .as_deref()
+        .and_then(git_branch)
+        .unwrap_or_else(|| "—".into());
     let env_str = info.environ_count.to_string();
     let pid_str = info.pid.to_string();
-    let started_str = format!("epoch {}", info.start_time);
     let runtime_str = format_duration_full(info.run_time);
 
     let lines = vec![
@@ -71,12 +102,11 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo) {
         kv("Parent PID:     ", &parent),
         kv("Name:           ", display_name(info)),
         kv("Status:         ", &info.status),
-        kv("CPU:            ", &cpu_str),
-        kv("Memory:         ", &mem_str),
-        kv("Exe Path:       ", exe),
+        kv("Project:        ", project),
+        kv("Git Branch:     ", &branch),
         kv("Working Dir:    ", cwd),
+        kv("Exe Path:       ", exe),
         kv("Env Vars:       ", &env_str),
-        kv("Started:        ", &started_str),
         kv("Run Time:       ", &runtime_str),
     ];
 
@@ -112,10 +142,10 @@ pub fn render_detail_view(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Header
-            Constraint::Length(13), // Info table
-            Constraint::Length(4),  // CPU sparkline
-            Constraint::Length(4),  // Memory sparkline
-            Constraint::Min(3),     // Command
+            Constraint::Length(12), // Info table
+            Constraint::Fill(1),    // CPU sparkline (splits remaining space with memory)
+            Constraint::Fill(1),    // Memory sparkline
+            Constraint::Length(4),  // Command
         ])
         .split(area);
 
@@ -124,14 +154,16 @@ pub fn render_detail_view(
 
     // Multiply CPU float (0–100) by 10 to preserve one decimal of precision as u64.
     let cpu_data: Vec<u64> = cpu_history.iter().map(|&v| (v * 10.0) as u64).collect();
-    render_sparkline(f, sections[2], " CPU Usage % ", &cpu_data, CLAUDE_SPARKLINE_STYLE);
+    let cpu_title = format!(" CPU Usage — {:.1}% ", info.cpu_usage);
+    render_sparkline(f, sections[2], &cpu_title, &cpu_data, CLAUDE_SPARKLINE_STYLE);
 
     // Convert bytes to MB for a readable scale in the sparkline.
     let mem_data: Vec<u64> = mem_history.iter().map(|&b| b / (1024 * 1024)).collect();
+    let mem_title = format!(" Memory Usage — {} ", format_memory(info.memory_bytes));
     render_sparkline(
         f,
         sections[3],
-        " Memory Usage (MB) ",
+        &mem_title,
         &mem_data,
         CODEX_SPARKLINE_STYLE,
     );
