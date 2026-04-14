@@ -31,9 +31,7 @@ pub fn render_footer(f: &mut Frame, area: Rect, active_view: &ActiveView, palett
         ],
     };
 
-    let key_style = Style::new()
-        .fg(palette.label)
-        .add_modifier(Modifier::BOLD);
+    let key_style = Style::new().fg(palette.label).add_modifier(Modifier::BOLD);
     let desc_style = palette.dim_style();
 
     let spans: Vec<Span> = hints

@@ -118,21 +118,21 @@ impl Palette {
             },
             Theme::Dracula => Self {
                 // Official Dracula palette: https://draculatheme.com/contribute
-                background: Color::Rgb(40, 42, 54),   // background
+                background: Color::Rgb(40, 42, 54), // background
                 foreground: Color::Rgb(248, 248, 242), // foreground
-                claude: Color::Rgb(255, 121, 198),     // pink
-                codex: Color::Rgb(80, 250, 123),       // green
-                child: Color::Rgb(98, 114, 164),       // comment
-                border: Color::Rgb(68, 71, 90),        // current line
-                title: Color::Rgb(248, 248, 242),      // foreground
-                header: Color::Rgb(241, 250, 140),     // yellow
+                claude: Color::Rgb(255, 121, 198),  // pink
+                codex: Color::Rgb(80, 250, 123),    // green
+                child: Color::Rgb(98, 114, 164),    // comment
+                border: Color::Rgb(68, 71, 90),     // current line
+                title: Color::Rgb(248, 248, 242),   // foreground
+                header: Color::Rgb(241, 250, 140),  // yellow
                 selected_bg: Color::Rgb(68, 71, 90),
-                label: Color::Rgb(189, 147, 249),      // purple
-                dim: Color::Rgb(98, 114, 164),         // comment
+                label: Color::Rgb(189, 147, 249), // purple
+                dim: Color::Rgb(98, 114, 164),    // comment
             },
             Theme::SolarizedDark => Self {
                 // Ethan Schoonover's Solarized Dark
-                background: Color::Rgb(0, 43, 54),    // base03
+                background: Color::Rgb(0, 43, 54),     // base03
                 foreground: Color::Rgb(131, 148, 150), // base0
                 claude: Color::Rgb(203, 75, 22),       // orange
                 codex: Color::Rgb(133, 153, 0),        // green
@@ -146,17 +146,17 @@ impl Palette {
             },
             Theme::SolarizedLight => Self {
                 // Ethan Schoonover's Solarized Light
-                background: Color::Rgb(253, 246, 227), // base3
-                foreground: Color::Rgb(101, 123, 131), // base00
-                claude: Color::Rgb(203, 75, 22),       // orange
-                codex: Color::Rgb(133, 153, 0),        // green
-                child: Color::Rgb(101, 123, 131),      // base00
-                border: Color::Rgb(147, 161, 161),     // base1
-                title: Color::Rgb(88, 110, 117),       // base01
-                header: Color::Rgb(181, 137, 0),       // yellow
+                background: Color::Rgb(253, 246, 227),  // base3
+                foreground: Color::Rgb(101, 123, 131),  // base00
+                claude: Color::Rgb(203, 75, 22),        // orange
+                codex: Color::Rgb(133, 153, 0),         // green
+                child: Color::Rgb(101, 123, 131),       // base00
+                border: Color::Rgb(147, 161, 161),      // base1
+                title: Color::Rgb(88, 110, 117),        // base01
+                header: Color::Rgb(181, 137, 0),        // yellow
                 selected_bg: Color::Rgb(238, 232, 213), // base2
-                label: Color::Rgb(38, 139, 210),       // blue
-                dim: Color::Rgb(147, 161, 161),        // base1
+                label: Color::Rgb(38, 139, 210),        // blue
+                dim: Color::Rgb(147, 161, 161),         // base1
             },
             Theme::GruvboxDark => Self {
                 // Gruvbox Dark: https://github.com/morhetz/gruvbox
@@ -222,7 +222,9 @@ impl Palette {
     }
 
     pub fn selected_style(&self) -> Style {
-        Style::new().bg(self.selected_bg).add_modifier(Modifier::BOLD)
+        Style::new()
+            .bg(self.selected_bg)
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn label_style(&self) -> Style {

@@ -64,10 +64,7 @@ async fn main() -> color_eyre::Result<()> {
 /// fails to draw a frame.
 async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     let mut app = App::new();
-    let mut event_handler = EventHandler::new(
-        Duration::from_secs(2),
-        Duration::from_millis(33),
-    );
+    let mut event_handler = EventHandler::new(Duration::from_secs(2), Duration::from_millis(33));
 
     // ── Scanner channels ─────────────────────────────────────────────────────
     // scan_trigger_tx: the main loop sends a `()` to ask for a fresh scan.
@@ -208,13 +205,18 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // instead of leaving the terminal's default dark color showing through.
     f.render_widget(Block::default().style(palette.base_style()), f.area());
 
-    ui::render_status_bar(f, status_area, &app.system_stats);
+    ui::render_status_bar(f, status_area, &app.system_stats, &app.agent_summary);
 
     match app.active_view {
         ActiveView::Tree => {
             ui::render_tree_view(
-                f, main_area, &app.flat_list, &mut app.table_state,
-                app.sort_column, app.sort_direction, palette,
+                f,
+                main_area,
+                &app.flat_list,
+                &mut app.table_state,
+                app.sort_column,
+                app.sort_direction,
+                palette,
             );
         }
         ActiveView::Detail => {
@@ -236,6 +238,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                     info,
                     &cpu_hist,
                     &mem_hist,
+                    app.selected_detail_subtree,
                     app.graph_style,
                     palette,
                 );

@@ -6,8 +6,8 @@ use ratatui::widgets::TableState;
 use crate::action::Action;
 use crate::config::Config;
 use crate::process::{
-    build_forest, collect_expansion, flatten_visible, preserve_expansion, toggle_expand, FlatEntry,
-    ProcessInfo, ProcessNode, SystemStats,
+    build_forest, collect_expansion, flatten_visible, preserve_expansion, process_kind,
+    toggle_expand, FlatEntry, ProcessInfo, ProcessKind, ProcessNode, SubtreeStats, SystemStats,
 };
 use crate::ui::styles::{GraphStyle, Palette, Theme};
 
@@ -31,7 +31,12 @@ pub enum SortColumn {
 
 impl SortColumn {
     const ALL: [SortColumn; 6] = [
-        Self::Pid, Self::Name, Self::Cpu, Self::Memory, Self::Status, Self::Uptime,
+        Self::Pid,
+        Self::Name,
+        Self::Cpu,
+        Self::Memory,
+        Self::Status,
+        Self::Uptime,
     ];
 
     pub fn next(self) -> Self {
@@ -49,7 +54,6 @@ impl SortColumn {
             .expect("SortColumn variant missing from ALL array");
         Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
     }
-
 }
 
 /// Sort direction.
@@ -67,6 +71,22 @@ impl SortDirection {
             Self::Descending => Self::Ascending,
         }
     }
+}
+
+/// Aggregated counts and resource usage across all detected agent processes.
+///
+/// Computed after every process refresh via [`App::compute_agent_summary`] and
+/// displayed in the status bar to give an at-a-glance overview of active agents.
+#[derive(Debug, Clone, Default)]
+pub struct AgentSummary {
+    /// Number of Claude Code root processes currently running.
+    pub claude_count: usize,
+    /// Number of Codex CLI root processes currently running.
+    pub codex_count: usize,
+    /// Total CPU usage (%) across all agent subtrees.
+    pub total_cpu: f32,
+    /// Total resident memory (bytes) across all agent subtrees.
+    pub total_memory: u64,
 }
 
 /// Tracks which top-level panel is currently receiving input and being rendered.
@@ -134,6 +154,8 @@ pub struct App {
     pub table_state: TableState,
     /// Process snapshot shown in the detail panel; `None` until a row is selected.
     pub selected_detail: Option<ProcessInfo>,
+    /// Subtree statistics for the selected process; `None` until a row is selected.
+    pub selected_detail_subtree: Option<SubtreeStats>,
     /// Rolling CPU-usage history per PID (percentage, up to [`HISTORY_LEN`] samples).
     pub cpu_history: HashMap<u32, VecDeque<f32>>,
     /// Rolling resident-memory history per PID (bytes, up to [`HISTORY_LEN`] samples).
@@ -156,6 +178,8 @@ pub struct App {
     pub graph_style: GraphStyle,
     /// Settings popup state; `None` when the popup is closed.
     pub config_popup: Option<ConfigPopupState>,
+    /// Latest aggregated summary across all detected agent processes.
+    pub agent_summary: AgentSummary,
 }
 
 impl App {
@@ -195,7 +219,10 @@ impl App {
     /// Dispatch an [`Action`] produced by the event loop, mutating state accordingly.
     pub fn handle_action(&mut self, action: Action) {
         // Clear the kill result message on any action that isn't part of the kill flow.
-        if !matches!(action, Action::KillRequest | Action::ConfirmKill | Action::CancelKill) {
+        if !matches!(
+            action,
+            Action::KillRequest | Action::ConfirmKill | Action::CancelKill
+        ) {
             self.kill_result = None;
         }
 
@@ -216,6 +243,7 @@ impl App {
                 if let Some(idx) = self.table_state.selected() {
                     if let Some(entry) = self.flat_list.get(idx) {
                         self.selected_detail = Some(entry.info.clone());
+                        self.selected_detail_subtree = Some(entry.subtree_stats);
                         self.active_view = ActiveView::Detail;
                     }
                 }
@@ -353,15 +381,52 @@ impl App {
         }
 
         self.rebuild_flat_list();
+
+        // Refresh the subtree stats for the selected process from the newly
+        // flattened list, so the detail view always shows current aggregate data.
+        if let Some(ref detail) = self.selected_detail {
+            let pid = detail.pid;
+            self.selected_detail_subtree = self
+                .flat_list
+                .iter()
+                .find(|e| e.info.pid == pid)
+                .map(|e| e.subtree_stats);
+        }
+
+        self.agent_summary = self.compute_agent_summary();
     }
 
     /// Sort the forest in place, then flatten into `flat_list`.
     ///
     /// Sorting is done on the tree before flattening so sibling order at every
     /// depth level is correct and parent-child grouping is never violated.
+    /// Root nodes are sorted by aggregate (subtree) stats; child nodes by self stats.
     fn sort_flat_list(&mut self) {
-        sort_forest(&mut self.forest, self.sort_column, self.sort_direction);
+        sort_forest(
+            &mut self.forest,
+            self.sort_column,
+            self.sort_direction,
+            true,
+        );
         self.flat_list = flatten_visible(&self.forest);
+    }
+
+    /// Compute the [`AgentSummary`] from the current forest.
+    ///
+    /// Iterates over root nodes only: each root's `subtree_stats` already
+    /// carries the recursive aggregate, so no additional traversal is needed.
+    pub fn compute_agent_summary(&self) -> AgentSummary {
+        let mut summary = AgentSummary::default();
+        for root in &self.forest {
+            match process_kind(&root.info) {
+                Some(ProcessKind::Claude) => summary.claude_count += 1,
+                Some(ProcessKind::Codex) => summary.codex_count += 1,
+                None => {}
+            }
+            summary.total_cpu += root.subtree_stats.total_cpu;
+            summary.total_memory += root.subtree_stats.total_memory;
+        }
+        summary
     }
 
     /// Rebuild and sort `flat_list`, then clamp the selection cursor.
@@ -509,23 +574,67 @@ fn kill_process(pid: u32) -> String {
 /// Sort process nodes recursively: siblings at each level are sorted,
 /// preserving the parent-child tree structure.
 ///
+/// When `use_aggregate` is `true` the root-level siblings are sorted by their
+/// subtree aggregate values for CPU and Memory columns, giving a more useful
+/// ordering (e.g. a claude instance using 400 MB of child memory ranks higher
+/// than one using 10 MB). Children are always sorted by their own `info` values.
+///
 /// # Arguments
 ///
-/// * `nodes`     - Mutable slice of sibling nodes to sort at this level.
-/// * `column`    - The column to compare on.
-/// * `direction` - Ascending or descending order.
-fn sort_forest(nodes: &mut [ProcessNode], column: SortColumn, direction: SortDirection) {
+/// * `nodes`         - Mutable slice of sibling nodes to sort at this level.
+/// * `column`        - The column to compare on.
+/// * `direction`     - Ascending or descending order.
+/// * `use_aggregate` - When `true`, sort this level by subtree stats for
+///   CPU/Memory columns. Set to `false` for recursive calls.
+fn sort_forest(
+    nodes: &mut [ProcessNode],
+    column: SortColumn,
+    direction: SortDirection,
+    use_aggregate: bool,
+) {
     nodes.sort_by(|a, b| {
-        let cmp = compare_by_column(&a.info, &b.info, column);
+        let cmp = compare_nodes(a, b, column, use_aggregate);
         match direction {
             SortDirection::Ascending => cmp,
             SortDirection::Descending => cmp.reverse(),
         }
     });
-    // Recurse so every sibling group at every depth is sorted.
+    // Children are always sorted by their own stats (use_aggregate = false).
     for node in nodes.iter_mut() {
-        sort_forest(&mut node.children, column, direction);
+        sort_forest(&mut node.children, column, direction, false);
     }
+}
+
+/// Compare two [`ProcessNode`] values by the given sort column.
+///
+/// When `use_aggregate` is `true` and the column is `Cpu` or `Memory`, the
+/// comparison uses `subtree_stats` totals so root nodes are ranked by their
+/// full resource footprint rather than just the top-level process.
+fn compare_nodes(
+    a: &ProcessNode,
+    b: &ProcessNode,
+    column: SortColumn,
+    use_aggregate: bool,
+) -> std::cmp::Ordering {
+    if use_aggregate {
+        match column {
+            SortColumn::Cpu => {
+                return a
+                    .subtree_stats
+                    .total_cpu
+                    .partial_cmp(&b.subtree_stats.total_cpu)
+                    .unwrap_or(std::cmp::Ordering::Equal);
+            }
+            SortColumn::Memory => {
+                return a
+                    .subtree_stats
+                    .total_memory
+                    .cmp(&b.subtree_stats.total_memory);
+            }
+            _ => {}
+        }
+    }
+    compare_by_column(&a.info, &b.info, column)
 }
 
 /// Compare two [`ProcessInfo`] values by the given sort column.
@@ -540,5 +649,71 @@ fn compare_by_column(a: &ProcessInfo, b: &ProcessInfo, column: SortColumn) -> st
         SortColumn::Memory => a.memory_bytes.cmp(&b.memory_bytes),
         SortColumn::Status => a.status.cmp(&b.status),
         SortColumn::Uptime => a.run_time.cmp(&b.run_time),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::{build_forest, ProcessInfo};
+
+    fn make_proc(pid: u32, parent: Option<u32>, name: &str, cpu: f32, mem: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            parent_pid: parent,
+            name: name.to_string(),
+            cmd: vec![name.to_string()],
+            exe_path: None,
+            cwd: None,
+            cpu_usage: cpu,
+            memory_bytes: mem,
+            status: "Run".to_string(),
+            environ_count: 0,
+            start_time: 0,
+            run_time: 0,
+        }
+    }
+
+    #[test]
+    fn test_agent_summary_empty() {
+        // An empty forest should produce a zeroed AgentSummary.
+        let app = App {
+            forest: build_forest(&[]),
+            ..Default::default()
+        };
+        let summary = app.compute_agent_summary();
+        assert_eq!(summary.claude_count, 0);
+        assert_eq!(summary.codex_count, 0);
+        assert_eq!(summary.total_memory, 0);
+        assert!((summary.total_cpu - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_agent_summary_mixed() {
+        // 2 claude roots + 1 codex root, each with one child.
+        // subtree_stats should be aggregated (self + child).
+        let procs = vec![
+            make_proc(1, None, "claude", 1.0, 100),
+            make_proc(2, Some(1), "node", 1.0, 100), // child of claude 1
+            make_proc(3, None, "claude", 2.0, 200),
+            make_proc(4, Some(3), "node", 2.0, 200), // child of claude 3
+            make_proc(5, None, "codex", 3.0, 300),
+            make_proc(6, Some(5), "node", 3.0, 300), // child of codex
+        ];
+        let app = App {
+            forest: build_forest(&procs),
+            ..Default::default()
+        };
+        let summary = app.compute_agent_summary();
+        assert_eq!(summary.claude_count, 2);
+        assert_eq!(summary.codex_count, 1);
+        // Each root's subtree_stats covers self + one child, so:
+        // claude1: cpu=2.0, mem=200; claude3: cpu=4.0, mem=400; codex5: cpu=6.0, mem=600
+        assert!(
+            (summary.total_cpu - 12.0).abs() < 1e-3,
+            "total cpu: {}",
+            summary.total_cpu
+        );
+        assert_eq!(summary.total_memory, 1200);
     }
 }

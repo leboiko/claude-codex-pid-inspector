@@ -14,12 +14,12 @@ use crate::process::{display_name, ProcessKind};
 use super::format::{format_duration_compact, format_memory};
 use super::styles::Palette;
 
-/// Column widths matching the spec.
+/// Column widths. CPU and Memory are wider to accommodate aggregate `"self (total)"` display.
 const WIDTHS: [Constraint; 7] = [
     Constraint::Length(8),  // PID
     Constraint::Min(20),    // Name (with tree prefix)
-    Constraint::Length(8),  // CPU%
-    Constraint::Length(10), // Memory
+    Constraint::Length(16), // CPU% (+ aggregate for roots with children)
+    Constraint::Length(18), // Memory (+ aggregate for roots with children)
     Constraint::Length(10), // Status
     Constraint::Min(30),    // Command
     Constraint::Length(12), // Uptime
@@ -70,9 +70,40 @@ fn name_cell(entry: &FlatEntry) -> String {
     format!("{}{}{}", prefix, indicator, display_name(&entry.info))
 }
 
+/// Format the CPU cell for a flat entry.
+///
+/// For root nodes that have children, shows `"self% (agg%)"` so the user can
+/// see both the process's own usage and the full subtree footprint at a glance.
+fn cpu_cell(entry: &FlatEntry) -> String {
+    let self_cpu = format!("{:.1}%", entry.info.cpu_usage);
+    if entry.is_root && entry.has_children {
+        format!("{} ({:.1}%)", self_cpu, entry.subtree_stats.total_cpu)
+    } else {
+        self_cpu
+    }
+}
+
+/// Format the memory cell for a flat entry.
+///
+/// For root nodes that have children, shows `"self (agg)"` so the user can
+/// see both the process's own memory and the full subtree footprint.
+fn memory_cell(entry: &FlatEntry) -> String {
+    let self_mem = format_memory(entry.info.memory_bytes);
+    if entry.is_root && entry.has_children {
+        format!(
+            "{} ({})",
+            self_mem,
+            format_memory(entry.subtree_stats.total_memory)
+        )
+    } else {
+        self_mem
+    }
+}
+
 /// Build the table rows from a flattened process list.
 ///
 /// Extracted from [`render_tree_view`] so each concern has a single home.
+/// Root entries with children show aggregate CPU and memory in parentheses.
 fn build_rows<'a>(flat_list: &'a [FlatEntry], palette: &Palette) -> Vec<Row<'a>> {
     flat_list
         .iter()
@@ -81,8 +112,8 @@ fn build_rows<'a>(flat_list: &'a [FlatEntry], palette: &Palette) -> Vec<Row<'a>>
             Row::new([
                 entry.info.pid.to_string(),
                 name_cell(entry),
-                format!("{:.1}%", entry.info.cpu_usage),
-                format_memory(entry.info.memory_bytes),
+                cpu_cell(entry),
+                memory_cell(entry),
                 entry.info.status.clone(),
                 cmd,
                 format_duration_compact(entry.info.run_time),
@@ -101,7 +132,9 @@ fn header_labels(column: SortColumn, direction: SortDirection) -> Vec<String> {
         SortDirection::Ascending => " ^",
         SortDirection::Descending => " v",
     };
-    let base = ["PID", "Name", "CPU%", "Memory", "Status", "Command", "Uptime"];
+    let base = [
+        "PID", "Name", "CPU%", "Memory", "Status", "Command", "Uptime",
+    ];
     // `None` marks columns that are not sortable (Command).
     let sort_cols: [Option<SortColumn>; 7] = [
         Some(SortColumn::Pid),

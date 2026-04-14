@@ -19,9 +19,7 @@ pub fn render_kill_confirm(f: &mut Frame, pid: u32, process_name: &str, palette:
     // Clear the background behind the popup.
     f.render_widget(Clear, area);
 
-    let key_style = Style::new()
-        .fg(palette.label)
-        .add_modifier(Modifier::BOLD);
+    let key_style = Style::new().fg(palette.label).add_modifier(Modifier::BOLD);
     let text_style = Style::new().fg(palette.foreground);
     let dim_style = palette.dim_style();
 

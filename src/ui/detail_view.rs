@@ -11,6 +11,7 @@ use ratatui::{
 
 use crate::process::display_name;
 use crate::process::info::ProcessInfo;
+use crate::process::SubtreeStats;
 
 use super::format::{format_duration_full, format_memory};
 use super::styles::{GraphStyle, Palette};
@@ -120,11 +121,23 @@ fn git_branch(cwd: &str) -> Option<String> {
 }
 
 /// Build key-value info lines from a [`ProcessInfo`] and render them as a [`Paragraph`].
-fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Palette) {
+///
+/// When `subtree_stats` is `Some`, three additional rows are appended showing
+/// the aggregated CPU, memory, and child-process count for the entire subtree.
+fn render_info_table(
+    f: &mut Frame,
+    area: Rect,
+    info: &ProcessInfo,
+    subtree_stats: Option<SubtreeStats>,
+    palette: &Palette,
+) {
     // Build all formatted values as owned Strings first, then borrow them
     // as &str for `kv`. This avoids passing temporaries by value into the
     // Span, which requires `'static` lifetimes in ratatui's Cow-based API.
-    let parent = info.parent_pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
+    let parent = info
+        .parent_pid
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "—".into());
     let exe = info.exe_path.as_deref().unwrap_or("—");
     let cwd = info.cwd.as_deref().unwrap_or("—");
     let project = info.cwd.as_deref().map(basename).unwrap_or("—");
@@ -137,7 +150,15 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Pa
     let pid_str = info.pid.to_string();
     let runtime_str = format_duration_full(info.run_time);
 
-    let lines = vec![
+    // Pre-compute optional subtree strings so they live long enough for the
+    // `kv` borrows, which must survive until `Paragraph::new(lines)` below.
+    // Rust's borrow checker requires these to be declared in the same scope as
+    // `lines`, not inside a nested `if let` block that ends before their use.
+    let subtree_cpu_str = subtree_stats.map(|s| format!("{:.1}%", s.total_cpu));
+    let subtree_mem_str = subtree_stats.map(|s| format_memory(s.total_memory));
+    let child_count_str = subtree_stats.map(|s| (s.process_count.saturating_sub(1)).to_string());
+
+    let mut lines = vec![
         kv("PID:            ", &pid_str, palette),
         kv("Parent PID:     ", &parent, palette),
         kv("Name:           ", display_name(info), palette),
@@ -149,6 +170,15 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Pa
         kv("Env Vars:       ", &env_str, palette),
         kv("Run Time:       ", &runtime_str, palette),
     ];
+
+    // Append subtree aggregate rows when stats are available.
+    if let (Some(ref cpu), Some(ref mem), Some(ref count)) =
+        (&subtree_cpu_str, &subtree_mem_str, &child_count_str)
+    {
+        lines.push(kv("CPU (subtree):  ", cpu, palette));
+        lines.push(kv("Mem (subtree):  ", mem, palette));
+        lines.push(kv("Child procs:    ", count, palette));
+    }
 
     let block = Block::default()
         .title(" Info ")
@@ -166,33 +196,42 @@ fn render_info_table(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Pa
 ///
 /// # Arguments
 ///
-/// * `f`           - Ratatui frame.
-/// * `area`        - Available screen area.
-/// * `info`        - Process information to display.
-/// * `cpu_history` - Recent CPU usage samples (0.0–100.0).
-/// * `mem_history` - Recent memory usage samples in bytes.
+/// * `f`              - Ratatui frame.
+/// * `area`           - Available screen area.
+/// * `info`           - Process information to display.
+/// * `cpu_history`    - Recent CPU usage samples (0.0–100.0).
+/// * `mem_history`    - Recent memory usage samples in bytes.
+/// * `subtree_stats`  - Optional aggregate stats for the process subtree; when
+///   `Some`, three extra rows appear in the info table.
+/// * `graph_style`    - Dot vs bar chart style.
+/// * `palette`        - Active color theme.
+#[allow(clippy::too_many_arguments)]
 pub fn render_detail_view(
     f: &mut Frame,
     area: Rect,
     info: &ProcessInfo,
     cpu_history: &[f32],
     mem_history: &[u64],
+    subtree_stats: Option<SubtreeStats>,
     graph_style: GraphStyle,
     palette: &Palette,
 ) {
+    // The info table grows by 3 rows when subtree stats are present.
+    let info_height = if subtree_stats.is_some() { 15 } else { 12 };
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Length(12), // Info table
-            Constraint::Fill(1),    // CPU chart (splits remaining space with memory)
-            Constraint::Fill(1),    // Memory chart
-            Constraint::Length(4),  // Command
+            Constraint::Length(3),           // Header
+            Constraint::Length(info_height), // Info table (grows when subtree stats shown)
+            Constraint::Fill(1),             // CPU chart (splits remaining space with memory)
+            Constraint::Fill(1),             // Memory chart
+            Constraint::Length(4),           // Command
         ])
         .split(area);
 
     render_header(f, sections[0], info, palette);
-    render_info_table(f, sections[1], info, palette);
+    render_info_table(f, sections[1], info, subtree_stats, palette);
 
     // --- CPU chart -----------------------------------------------------------
     let cpu_points: Vec<(f64, f64)> = cpu_history
@@ -224,7 +263,8 @@ pub fn render_detail_view(
         .enumerate()
         .map(|(i, &b)| (i as f64, b as f64 / (1024.0 * 1024.0)))
         .collect();
-    let mem_observed_max = mem_history.iter().copied().max().unwrap_or(0) as f64 / (1024.0 * 1024.0);
+    let mem_observed_max =
+        mem_history.iter().copied().max().unwrap_or(0) as f64 / (1024.0 * 1024.0);
     let mem_axis_max = (mem_observed_max * 1.15).max(1.0);
     let mem_labels = vec!["0".to_string(), format!("{:.1} MB", mem_observed_max)];
     let mem_title = format!(" memory {} ", format_memory(info.memory_bytes));
@@ -245,7 +285,12 @@ pub fn render_detail_view(
 
 /// Render a compact header block showing the process name, PID, and status.
 fn render_header(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Palette) {
-    let title = format!(" {} — PID {} — {} ", display_name(info), info.pid, info.status);
+    let title = format!(
+        " {} — PID {} — {} ",
+        display_name(info),
+        info.pid,
+        info.status
+    );
     let block = Block::default()
         .title(title)
         .title_style(palette.title_style().add_modifier(Modifier::BOLD))

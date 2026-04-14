@@ -1,4 +1,6 @@
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{
+    CpuRefreshKind, MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind,
+};
 
 use super::info::ProcessInfo;
 

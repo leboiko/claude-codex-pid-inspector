@@ -3,6 +3,20 @@ use std::collections::HashMap;
 use super::filter::{is_target_process, process_kind, ProcessKind};
 use super::info::ProcessInfo;
 
+/// Aggregated resource usage for a process and all of its descendants.
+///
+/// Computed by [`compute_subtree_stats`] after the forest is built, so every
+/// root node carries the rolled-up totals for its entire subtree.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SubtreeStats {
+    /// Sum of CPU usage (%) for this process and all descendants.
+    pub total_cpu: f32,
+    /// Sum of resident memory (bytes) for this process and all descendants.
+    pub total_memory: u64,
+    /// Total number of processes in the subtree, including self.
+    pub process_count: usize,
+}
+
 /// A node in the process tree, holding one process and its direct children.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessNode {
@@ -16,6 +30,8 @@ pub struct ProcessNode {
     pub expanded: bool,
     /// `true` for nodes that are top-level targets (not merely child subtrees).
     pub is_root: bool,
+    /// Aggregated CPU, memory, and count for this node and all descendants.
+    pub subtree_stats: SubtreeStats,
 }
 
 /// A single row in the flat, scrollable list derived from [`ProcessNode`] trees.
@@ -35,6 +51,8 @@ pub struct FlatEntry {
     pub is_last_sibling: bool,
     /// Detected kind (Claude / Codex), or `None` for plain child processes.
     pub kind: Option<ProcessKind>,
+    /// Aggregated CPU, memory, and count copied from the corresponding [`ProcessNode`].
+    pub subtree_stats: SubtreeStats,
 }
 
 // ---------------------------------------------------------------------------
@@ -46,6 +64,9 @@ pub struct FlatEntry {
 /// Only target processes (Claude / Codex, identified by [`is_target_process`])
 /// become root nodes. All processes are then considered as potential children
 /// when their `parent_pid` matches any node already in the forest.
+///
+/// Subtree statistics are computed for every root after the tree is assembled,
+/// so each node's [`ProcessNode::subtree_stats`] is fully populated.
 ///
 /// # Arguments
 ///
@@ -65,11 +86,18 @@ pub fn build_forest(processes: &[ProcessInfo]) -> Vec<ProcessNode> {
     }
 
     // Only target processes become tree roots.
-    processes
+    let mut roots: Vec<ProcessNode> = processes
         .iter()
         .filter(|p| is_target_process(p))
         .map(|p| build_node(p, &children_map, 0, true))
-        .collect()
+        .collect();
+
+    // Compute aggregated stats bottom-up for every root subtree.
+    for root in roots.iter_mut() {
+        compute_subtree_stats(root);
+    }
+
+    roots
 }
 
 /// Recursively build a [`ProcessNode`], attaching child subtrees.
@@ -77,6 +105,9 @@ pub fn build_forest(processes: &[ProcessInfo]) -> Vec<ProcessNode> {
 /// Recursion depth is bounded by the OS process tree depth, which is
 /// typically shallow (< 20 levels). No cycle guard is needed because
 /// the kernel guarantees acyclic parent-child relationships.
+///
+/// Note: [`SubtreeStats`] is left at `Default` here; [`compute_subtree_stats`]
+/// fills it in a second pass after the entire tree is assembled.
 fn build_node<'a>(
     info: &'a ProcessInfo,
     children_map: &HashMap<u32, Vec<&'a ProcessInfo>>,
@@ -99,7 +130,39 @@ fn build_node<'a>(
         // Default to expanded so the tree is fully visible on first render.
         expanded: true,
         is_root,
+        subtree_stats: SubtreeStats::default(),
     }
+}
+
+/// Recursively compute [`SubtreeStats`] for `node` and all of its descendants.
+///
+/// This is a post-order traversal: children are processed first so that
+/// their stats are available when computing the parent's aggregate.
+///
+/// # Arguments
+///
+/// * `node` - The node whose subtree stats should be populated (mutated in place).
+pub fn compute_subtree_stats(node: &mut ProcessNode) {
+    // Recurse into children first (post-order) so their stats are ready.
+    for child in node.children.iter_mut() {
+        compute_subtree_stats(child);
+    }
+
+    // Self contribution.
+    let mut stats = SubtreeStats {
+        total_cpu: node.info.cpu_usage,
+        total_memory: node.info.memory_bytes,
+        process_count: 1,
+    };
+
+    // Accumulate each child's already-computed subtree.
+    for child in &node.children {
+        stats.total_cpu += child.subtree_stats.total_cpu;
+        stats.total_memory += child.subtree_stats.total_memory;
+        stats.process_count += child.subtree_stats.process_count;
+    }
+
+    node.subtree_stats = stats;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +192,9 @@ fn flatten_node(node: &ProcessNode, out: &mut Vec<FlatEntry>, is_last_sibling: b
         has_children: !node.children.is_empty(),
         is_last_sibling,
         kind: process_kind(&node.info),
+        // Copy the pre-computed aggregate so the flat list can render rollups
+        // and the detail view can display subtree totals without re-traversing.
+        subtree_stats: node.subtree_stats,
     });
 
     if node.expanded {
@@ -205,6 +271,30 @@ mod tests {
         }
     }
 
+    /// Build a `ProcessInfo` with explicit CPU and memory values for stats tests.
+    fn proc_with_resources(
+        pid: u32,
+        parent: Option<u32>,
+        name: &str,
+        cpu: f32,
+        mem: u64,
+    ) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            parent_pid: parent,
+            name: name.to_string(),
+            cmd: vec![name.to_string()],
+            exe_path: None,
+            cwd: None,
+            cpu_usage: cpu,
+            memory_bytes: mem,
+            status: "Run".to_string(),
+            environ_count: 0,
+            start_time: 0,
+            run_time: 0,
+        }
+    }
+
     #[test]
     fn build_forest_finds_roots() {
         let procs = vec![
@@ -254,5 +344,86 @@ mod tests {
         assert!(forest.is_empty());
         let flat = flatten_visible(&forest);
         assert!(flat.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // SubtreeStats tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_subtree_stats_leaf_node() {
+        // A single root with no children: stats equal the node itself.
+        let procs = vec![proc_with_resources(1, None, "claude", 2.5, 1024)];
+        let forest = build_forest(&procs);
+        let stats = forest[0].subtree_stats;
+        assert_eq!(stats.process_count, 1);
+        assert!((stats.total_cpu - 2.5).abs() < 1e-4, "cpu mismatch");
+        assert_eq!(stats.total_memory, 1024);
+    }
+
+    #[test]
+    fn test_subtree_stats_with_children() {
+        // Root (cpu=1.0, mem=100) + two children (cpu=2.0/3.0, mem=200/300).
+        let procs = vec![
+            proc_with_resources(1, None, "claude", 1.0, 100),
+            proc_with_resources(2, Some(1), "node", 2.0, 200),
+            proc_with_resources(3, Some(1), "node", 3.0, 300),
+        ];
+        let forest = build_forest(&procs);
+        let stats = forest[0].subtree_stats;
+        assert_eq!(stats.process_count, 3);
+        assert!((stats.total_cpu - 6.0).abs() < 1e-4, "cpu mismatch");
+        assert_eq!(stats.total_memory, 600);
+    }
+
+    #[test]
+    fn test_subtree_stats_deep_tree() {
+        // Three levels: root -> child -> grandchild.
+        let procs = vec![
+            proc_with_resources(1, None, "claude", 1.0, 10),
+            proc_with_resources(2, Some(1), "node", 1.0, 20),
+            proc_with_resources(3, Some(2), "node", 1.0, 30),
+        ];
+        let forest = build_forest(&procs);
+        // Root should aggregate all three levels.
+        let root_stats = forest[0].subtree_stats;
+        assert_eq!(root_stats.process_count, 3);
+        assert!((root_stats.total_cpu - 3.0).abs() < 1e-4, "root cpu");
+        assert_eq!(root_stats.total_memory, 60);
+
+        // The middle node's subtree covers itself + grandchild only.
+        let child_stats = forest[0].children[0].subtree_stats;
+        assert_eq!(child_stats.process_count, 2);
+        assert!((child_stats.total_cpu - 2.0).abs() < 1e-4, "child cpu");
+        assert_eq!(child_stats.total_memory, 50);
+    }
+
+    #[test]
+    fn test_subtree_stats_in_flat_entry() {
+        // Verify that flatten_visible copies subtree_stats from the node.
+        let procs = vec![
+            proc_with_resources(1, None, "claude", 4.0, 400),
+            proc_with_resources(2, Some(1), "node", 1.0, 100),
+        ];
+        let forest = build_forest(&procs);
+        let flat = flatten_visible(&forest);
+
+        // The root FlatEntry should carry the aggregated stats.
+        let root_flat = flat
+            .iter()
+            .find(|e| e.info.pid == 1)
+            .expect("root not found");
+        assert_eq!(root_flat.subtree_stats.process_count, 2);
+        assert!((root_flat.subtree_stats.total_cpu - 5.0).abs() < 1e-4);
+        assert_eq!(root_flat.subtree_stats.total_memory, 500);
+
+        // The child FlatEntry's subtree_stats should equal itself (leaf).
+        let child_flat = flat
+            .iter()
+            .find(|e| e.info.pid == 2)
+            .expect("child not found");
+        assert_eq!(child_flat.subtree_stats.process_count, 1);
+        assert!((child_flat.subtree_stats.total_cpu - 1.0).abs() < 1e-4);
+        assert_eq!(child_flat.subtree_stats.total_memory, 100);
     }
 }

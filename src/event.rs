@@ -3,11 +3,7 @@ use std::time::Duration;
 use color_eyre::eyre::eyre;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
 use futures::{FutureExt, StreamExt};
-use tokio::{
-    sync::mpsc,
-    task::JoinHandle,
-    time,
-};
+use tokio::{sync::mpsc, task::JoinHandle, time};
 
 /// Events emitted by the [`EventHandler`] to drive the application loop.
 #[derive(Debug)]
@@ -60,11 +56,7 @@ impl EventHandler {
 }
 
 /// Background task: select over tick timer, render timer, and crossterm events.
-async fn event_loop(
-    tx: mpsc::UnboundedSender<Event>,
-    tick_rate: Duration,
-    render_rate: Duration,
-) {
+async fn event_loop(tx: mpsc::UnboundedSender<Event>, tick_rate: Duration, render_rate: Duration) {
     let mut tick_interval = time::interval(tick_rate);
     let mut render_interval = time::interval(render_rate);
     let mut reader = EventStream::new();

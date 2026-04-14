@@ -14,8 +14,15 @@ fn main() {
     println!("=== All processes with 'claude' or 'codex' in name/cmd/exe ===\n");
     for (pid, proc) in sys.processes() {
         let name = proc.name().to_string_lossy().to_string();
-        let exe = proc.exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        let cmd: Vec<String> = proc.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect();
+        let exe = proc
+            .exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let cmd: Vec<String> = proc
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
         let cmd_str = cmd.join(" ");
 
         let haystack = format!("{} {} {}", name, exe, cmd_str).to_lowercase();

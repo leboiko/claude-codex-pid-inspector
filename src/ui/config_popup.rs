@@ -66,13 +66,9 @@ fn build_lines<'a>(
 ) -> Vec<Line<'a>> {
     let section_style = palette.header_style();
     let text_style = Style::new().fg(palette.foreground);
-    let cursor_style = Style::new()
-        .fg(palette.claude)
-        .add_modifier(Modifier::BOLD);
+    let cursor_style = Style::new().fg(palette.claude).add_modifier(Modifier::BOLD);
     let dim_style = palette.dim_style();
-    let active_style = Style::new()
-        .fg(palette.codex)
-        .add_modifier(Modifier::BOLD);
+    let active_style = Style::new().fg(palette.codex).add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
@@ -149,7 +145,11 @@ fn option_line<'a>(
     dim_style: Style,
 ) -> Line<'a> {
     let arrow = if is_cursor { "> " } else { "  " };
-    let bullet = if is_active { ACTIVE_BULLET } else { INACTIVE_BULLET };
+    let bullet = if is_active {
+        ACTIVE_BULLET
+    } else {
+        INACTIVE_BULLET
+    };
     let bullet_style = if is_active { active_style } else { dim_style };
     let label_style = if is_cursor { cursor_style } else { text_style };
 
