@@ -77,6 +77,7 @@ fn render_chart(
 
     let chart = Chart::new(vec![dataset])
         .block(block)
+        .style(palette.base_style())
         .x_axis(x_axis)
         .y_axis(y_axis);
 
