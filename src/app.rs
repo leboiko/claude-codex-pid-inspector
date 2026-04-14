@@ -7,7 +7,8 @@ use crate::action::Action;
 use crate::config::Config;
 use crate::process::{
     build_forest, collect_expansion, flatten_visible, preserve_expansion, process_kind,
-    toggle_expand, FlatEntry, ProcessInfo, ProcessKind, ProcessNode, SubtreeStats, SystemStats,
+    toggle_expand, ActivityState, FlatEntry, ProcessInfo, ProcessKind, ProcessNode, SubtreeStats,
+    SystemStats,
 };
 use crate::ui::styles::{GraphStyle, Palette, Theme};
 
@@ -16,6 +17,13 @@ use crate::ui::styles::{GraphStyle, Palette, Theme};
 /// At the default 2-second tick rate this is ~10 minutes of history,
 /// enough to fill the sparkline chart on any realistic terminal width.
 const HISTORY_LEN: usize = 300;
+
+/// CPU usage percentage below which a root process is considered idle.
+pub const IDLE_CPU_THRESHOLD: f32 = 0.5;
+
+/// Minimum number of CPU samples required before classifying a process
+/// as idle or active. Fewer samples yield [`ActivityState::Unknown`].
+pub const IDLE_SAMPLE_WINDOW: usize = 5;
 
 /// Columns that support sorting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -138,6 +146,22 @@ impl ConfigPopupState {
     }
 }
 
+/// Context passed to [`App::map_key_to_action`] describing the current UI mode.
+///
+/// Bundling these boolean flags into a struct avoids a long parameter list and
+/// makes it straightforward to add new mode flags in the future without breaking
+/// all call sites.
+pub struct KeyContext<'a> {
+    /// The panel that currently owns keyboard focus.
+    pub active_view: &'a ActiveView,
+    /// Whether a kill-confirmation popup is currently open.
+    pub confirming_kill: bool,
+    /// Whether the config popup is currently open.
+    pub config_open: bool,
+    /// Whether the search/filter bar is currently active.
+    pub filter_active: bool,
+}
+
 /// Central application state. All mutations flow through [`App::handle_action`]
 /// or [`App::update_processes`], keeping the state machine easy to reason about.
 #[derive(Debug, Default)]
@@ -180,6 +204,14 @@ pub struct App {
     pub config_popup: Option<ConfigPopupState>,
     /// Latest aggregated summary across all detected agent processes.
     pub agent_summary: AgentSummary,
+    /// Per-root-PID activity classification (`Active` / `Idle` / `Unknown`).
+    pub activity_state: HashMap<u32, ActivityState>,
+    /// Per-root-PID aggregate CPU history used for idle/active classification.
+    pub aggregate_cpu_history: HashMap<u32, VecDeque<f32>>,
+    /// Whether the search/filter bar is currently accepting input.
+    pub filter_active: bool,
+    /// Current filter query text.
+    pub filter_text: String,
 }
 
 impl App {
@@ -303,6 +335,25 @@ impl App {
             Action::CloseConfig => {
                 self.config_popup = None;
             }
+            Action::EnterFilter => {
+                self.filter_active = true;
+            }
+            Action::ClearFilter => {
+                self.filter_active = false;
+                self.filter_text.clear();
+                self.rebuild_flat_list();
+            }
+            Action::FilterInput(c) => {
+                self.filter_text.push(c);
+                self.rebuild_flat_list();
+            }
+            Action::FilterBackspace => {
+                self.filter_text.pop();
+                if self.filter_text.is_empty() {
+                    self.filter_active = false;
+                }
+                self.rebuild_flat_list();
+            }
         }
     }
 
@@ -373,6 +424,14 @@ impl App {
         self.forest = build_forest(&processes);
         preserve_expansion(&mut self.forest, &old_expansion);
 
+        // Compute idle/active badges for root processes.
+        self.update_activity_states();
+
+        // Prune activity history for PIDs that have exited.
+        self.aggregate_cpu_history
+            .retain(|pid, _| live_pids.contains(pid));
+        self.activity_state.retain(|pid, _| live_pids.contains(pid));
+
         // Keep the detail view in sync with live data.
         if let Some(ref mut detail) = self.selected_detail {
             if let Some(updated) = processes.iter().find(|p| p.pid == detail.pid) {
@@ -429,12 +488,90 @@ impl App {
         summary
     }
 
-    /// Rebuild and sort `flat_list`, then clamp the selection cursor.
+    /// Rebuild and sort `flat_list`, inject activity badges, apply the current
+    /// filter, then clamp the selection cursor.
     ///
-    /// Call this whenever the forest structure or sort parameters change.
+    /// Call this whenever the forest structure, sort parameters, or filter text changes.
     fn rebuild_flat_list(&mut self) {
         self.sort_flat_list();
+
+        // Inject activity state into root FlatEntry values.
+        for entry in &mut self.flat_list {
+            if entry.is_root {
+                entry.activity = self.activity_state.get(&entry.info.pid).copied();
+            }
+        }
+
+        self.apply_filter();
         self.clamp_selection();
+    }
+
+    /// Update the idle/active classification for every root process in the forest.
+    fn update_activity_states(&mut self) {
+        for root in &self.forest {
+            let pid = root.info.pid;
+            let buf = self.aggregate_cpu_history.entry(pid).or_default();
+            if buf.len() == HISTORY_LEN {
+                buf.pop_front();
+            }
+            buf.push_back(root.info.cpu_usage);
+
+            let state = if buf.len() < IDLE_SAMPLE_WINDOW {
+                ActivityState::Unknown
+            } else {
+                let window_start = buf.len() - IDLE_SAMPLE_WINDOW;
+                let all_idle = buf
+                    .iter()
+                    .skip(window_start)
+                    .all(|&s| s < IDLE_CPU_THRESHOLD);
+                if all_idle {
+                    ActivityState::Idle
+                } else {
+                    ActivityState::Active
+                }
+            };
+            self.activity_state.insert(pid, state);
+        }
+    }
+
+    /// Filter `flat_list` in-place based on `filter_text`.
+    fn apply_filter(&mut self) {
+        if self.filter_text.is_empty() {
+            return;
+        }
+
+        let query = self.filter_text.to_lowercase();
+        let n = self.flat_list.len();
+
+        // Pass 1: direct match flags.
+        let mut keep = vec![false; n];
+        for (i, entry) in self.flat_list.iter().enumerate() {
+            keep[i] = entry_matches_filter(entry, &query);
+        }
+
+        // Pass 2: propagate keep upward through parent chains.
+        for i in (0..n).rev() {
+            if !keep[i] {
+                continue;
+            }
+            let child_depth = self.flat_list[i].depth;
+            if child_depth == 0 {
+                continue;
+            }
+            for j in (0..i).rev() {
+                if self.flat_list[j].depth == child_depth - 1 {
+                    keep[j] = true;
+                    break;
+                }
+            }
+        }
+
+        let mut idx = 0;
+        self.flat_list.retain(|_| {
+            let keep_entry = keep[idx];
+            idx += 1;
+            keep_entry
+        });
     }
 
     /// Return the PID of the currently focused process, if any.
@@ -493,20 +630,14 @@ impl App {
     ///
     /// * `key`         - The raw key event from crossterm.
     /// * `active_view` - The panel currently in focus; some bindings are view-specific.
-    pub fn map_key_to_action(
-        key: KeyEvent,
-        active_view: &ActiveView,
-        confirming_kill: bool,
-        config_open: bool,
-    ) -> Option<Action> {
+    pub fn map_key_to_action(key: KeyEvent, ctx: &KeyContext<'_>) -> Option<Action> {
         // Ctrl+C is a universal quit regardless of view or mode.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Action::Quit);
         }
 
-        // Config popup captures all input when open. 'c' toggles it closed;
-        // Esc also closes without applying a new selection.
-        if config_open {
+        // Config popup captures all input when open.
+        if ctx.config_open {
             return match key.code {
                 KeyCode::Up | KeyCode::Char('k') => Some(Action::ConfigUp),
                 KeyCode::Down | KeyCode::Char('j') => Some(Action::ConfigDown),
@@ -518,7 +649,7 @@ impl App {
         }
 
         // When a kill confirmation is pending, only y/n/Esc are accepted.
-        if confirming_kill {
+        if ctx.confirming_kill {
             return match key.code {
                 KeyCode::Char('y') => Some(Action::ConfirmKill),
                 KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelKill),
@@ -526,7 +657,20 @@ impl App {
             };
         }
 
-        match active_view {
+        // Filter bar intercepts most keystrokes when active.
+        if ctx.filter_active {
+            return match key.code {
+                KeyCode::Esc => Some(Action::ClearFilter),
+                KeyCode::Backspace => Some(Action::FilterBackspace),
+                KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
+                KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
+                KeyCode::Enter => Some(Action::SelectProcess),
+                KeyCode::Char(c) => Some(Action::FilterInput(c)),
+                _ => None,
+            };
+        }
+
+        match ctx.active_view {
             ActiveView::Tree => match key.code {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
@@ -538,6 +682,7 @@ impl App {
                 KeyCode::Char('s') => Some(Action::SortToggleDirection),
                 KeyCode::Char('x') => Some(Action::KillRequest),
                 KeyCode::Char('c') => Some(Action::ToggleConfig),
+                KeyCode::Char('/') => Some(Action::EnterFilter),
                 _ => None,
             },
             ActiveView::Detail => match key.code {
@@ -637,6 +782,35 @@ fn compare_nodes(
     compare_by_column(&a.info, &b.info, column)
 }
 
+/// Returns `true` when `entry` matches the given lower-cased `query`.
+///
+/// Checked fields (all compared case-insensitively):
+/// - Display name (`filter::display_name`)
+/// - PID as a decimal string
+/// - The basename of the working directory path
+/// - The full command line (argv joined with spaces)
+pub fn entry_matches_filter(entry: &FlatEntry, query: &str) -> bool {
+    use crate::process::display_name;
+
+    if display_name(&entry.info).to_lowercase().contains(query) {
+        return true;
+    }
+
+    if entry.info.pid.to_string().contains(query) {
+        return true;
+    }
+
+    if let Some(ref cwd) = entry.info.cwd {
+        let basename = cwd.rsplit('/').next().unwrap_or(cwd.as_str());
+        if basename.to_lowercase().contains(query) {
+            return true;
+        }
+    }
+
+    let cmd = entry.info.cmd.join(" ");
+    cmd.to_lowercase().contains(query)
+}
+
 /// Compare two [`ProcessInfo`] values by the given sort column.
 fn compare_by_column(a: &ProcessInfo, b: &ProcessInfo, column: SortColumn) -> std::cmp::Ordering {
     match column {
@@ -655,7 +829,7 @@ fn compare_by_column(a: &ProcessInfo, b: &ProcessInfo, column: SortColumn) -> st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::{build_forest, ProcessInfo};
+    use crate::process::{build_forest, flatten_visible, ProcessInfo};
 
     fn make_proc(pid: u32, parent: Option<u32>, name: &str, cpu: f32, mem: u64) -> ProcessInfo {
         ProcessInfo {
@@ -715,5 +889,112 @@ mod tests {
             summary.total_cpu
         );
         assert_eq!(summary.total_memory, 1200);
+    }
+
+    // ── Activity state tests ────────────────────────────────────────────────
+
+    fn app_with_procs(procs: Vec<ProcessInfo>) -> App {
+        let mut app = App::new();
+        app.forest = build_forest(&procs);
+        app.flat_list = flatten_visible(&app.forest);
+        app
+    }
+
+    fn make_proc_simple(pid: u32, parent: Option<u32>, name: &str, cpu: f32) -> ProcessInfo {
+        make_proc(pid, parent, name, cpu, 0)
+    }
+
+    #[test]
+    fn test_activity_unknown_fewer_than_window() {
+        let mut app = App::new();
+        let pid = 1u32;
+        let procs = vec![make_proc_simple(pid, None, "claude", 0.0)];
+        app.forest = build_forest(&procs);
+        let buf = app.aggregate_cpu_history.entry(pid).or_default();
+        for _ in 0..(IDLE_SAMPLE_WINDOW - 2) {
+            buf.push_back(0.0);
+        }
+        app.update_activity_states();
+        assert_eq!(app.activity_state.get(&pid), Some(&ActivityState::Unknown));
+    }
+
+    #[test]
+    fn test_activity_idle() {
+        let mut app = App::new();
+        let pid = 1u32;
+        let procs = vec![make_proc_simple(pid, None, "claude", 0.1)];
+        app.forest = build_forest(&procs);
+        let buf = app.aggregate_cpu_history.entry(pid).or_default();
+        for _ in 0..(IDLE_SAMPLE_WINDOW - 1) {
+            buf.push_back(0.1);
+        }
+        app.update_activity_states();
+        assert_eq!(app.activity_state.get(&pid), Some(&ActivityState::Idle));
+    }
+
+    #[test]
+    fn test_activity_active() {
+        let mut app = App::new();
+        let pid = 1u32;
+        let procs = vec![make_proc_simple(pid, None, "claude", 50.0)];
+        app.forest = build_forest(&procs);
+        let buf = app.aggregate_cpu_history.entry(pid).or_default();
+        for _ in 0..(IDLE_SAMPLE_WINDOW - 1) {
+            buf.push_back(0.1);
+        }
+        app.update_activity_states();
+        assert_eq!(app.activity_state.get(&pid), Some(&ActivityState::Active));
+    }
+
+    // ── Filter tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_filter_matches_name() {
+        let procs = vec![
+            make_proc_simple(1, None, "claude", 0.0),
+            make_proc_simple(2, None, "codex", 0.0),
+        ];
+        let mut app = app_with_procs(procs);
+        app.filter_text = "claude".to_string();
+        app.apply_filter();
+        assert_eq!(app.flat_list.len(), 1);
+        assert_eq!(app.flat_list[0].info.name, "claude");
+    }
+
+    #[test]
+    fn test_filter_preserves_parents() {
+        let procs = vec![
+            make_proc_simple(1, None, "claude", 0.0),
+            make_proc_simple(2, Some(1), "node", 0.0),
+        ];
+        let mut app = app_with_procs(procs);
+        app.filter_text = "node".to_string();
+        app.apply_filter();
+        assert_eq!(app.flat_list.len(), 2);
+        assert!(app.flat_list.iter().any(|e| e.info.pid == 1));
+        assert!(app.flat_list.iter().any(|e| e.info.pid == 2));
+    }
+
+    #[test]
+    fn test_filter_case_insensitive() {
+        let procs = vec![make_proc_simple(1, None, "claude", 0.0)];
+        let mut app = app_with_procs(procs);
+        app.filter_text = "CLAUDE".to_string();
+        app.apply_filter();
+        assert_eq!(app.flat_list.len(), 1);
+    }
+
+    #[test]
+    fn test_filter_clears() {
+        let procs = vec![
+            make_proc_simple(1, None, "claude", 0.0),
+            make_proc_simple(2, None, "codex", 0.0),
+        ];
+        let mut app = app_with_procs(procs);
+        app.filter_text = "claude".to_string();
+        app.apply_filter();
+        assert_eq!(app.flat_list.len(), 1);
+        app.handle_action(Action::ClearFilter);
+        assert_eq!(app.flat_list.len(), 2);
     }
 }

@@ -12,7 +12,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
-use crate::app::{ActiveView, App};
+use crate::app::{ActiveView, App, KeyContext};
 use crate::event::{Event, EventHandler};
 use crate::process::{display_name, ProcessInfo, ProcessScanner, SystemStats};
 
@@ -96,12 +96,13 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     loop {
         match event_handler.next().await? {
             Event::Key(key) => {
-                if let Some(action) = App::map_key_to_action(
-                    key,
-                    &app.active_view,
-                    app.confirm_kill_pid.is_some(),
-                    app.config_popup.is_some(),
-                ) {
+                let ctx = KeyContext {
+                    active_view: &app.active_view,
+                    confirming_kill: app.confirm_kill_pid.is_some(),
+                    config_open: app.config_popup.is_some(),
+                    filter_active: app.filter_active,
+                };
+                if let Some(action) = App::map_key_to_action(key, &ctx) {
                     app.handle_action(action);
                 }
             }
@@ -246,7 +247,14 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    ui::render_footer(f, footer_area, &app.active_view, palette);
+    ui::render_footer(
+        f,
+        footer_area,
+        &app.active_view,
+        palette,
+        app.filter_active,
+        &app.filter_text,
+    );
 
     // Popups render on top of everything else. Config popup takes precedence
     // over the kill popups, though in practice they can't be open at the same

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::filter::{is_target_process, process_kind, ProcessKind};
+use super::filter::{is_target_process, process_kind, ActivityState, ProcessKind};
 use super::info::ProcessInfo;
 
 /// Aggregated resource usage for a process and all of its descendants.
@@ -53,6 +53,9 @@ pub struct FlatEntry {
     pub kind: Option<ProcessKind>,
     /// Aggregated CPU, memory, and count copied from the corresponding [`ProcessNode`].
     pub subtree_stats: SubtreeStats,
+    /// Activity state for root agent processes; `None` for non-root entries.
+    /// Injected by [`crate::app::App::rebuild_flat_list`] after flattening.
+    pub activity: Option<ActivityState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +198,8 @@ fn flatten_node(node: &ProcessNode, out: &mut Vec<FlatEntry>, is_last_sibling: b
         // Copy the pre-computed aggregate so the flat list can render rollups
         // and the detail view can display subtree totals without re-traversing.
         subtree_stats: node.subtree_stats,
+        // Activity is injected by App::rebuild_flat_list after flattening.
+        activity: None,
     });
 
     if node.expanded {

@@ -1,5 +1,19 @@
 use super::info::ProcessInfo;
 
+/// Activity classification for a root process based on recent CPU history.
+///
+/// Determined by comparing the last [`IDLE_SAMPLE_WINDOW`](crate::app::IDLE_SAMPLE_WINDOW)
+/// CPU samples against [`IDLE_CPU_THRESHOLD`](crate::app::IDLE_CPU_THRESHOLD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityState {
+    /// CPU usage has exceeded the idle threshold in at least one recent sample.
+    Active,
+    /// All recent samples are below the idle threshold.
+    Idle,
+    /// Not enough samples have been collected yet to make a determination.
+    Unknown,
+}
+
 /// Identifies whether a process belongs to Claude Code or Codex CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessKind {

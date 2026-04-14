@@ -39,4 +39,12 @@ pub enum Action {
     ConfigSelect,
     /// Close the config popup without applying anything new.
     CloseConfig,
+    /// Activate the search/filter bar (bound to `/`).
+    EnterFilter,
+    /// Deactivate the filter bar and clear the filter text.
+    ClearFilter,
+    /// Append a character to the live filter query.
+    FilterInput(char),
+    /// Delete the last character from the filter query (Backspace).
+    FilterBackspace,
 }

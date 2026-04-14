@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::app::{SortColumn, SortDirection};
 use crate::process::tree::FlatEntry;
-use crate::process::{display_name, ProcessKind};
+use crate::process::{display_name, ActivityState, ProcessKind};
 
 use super::format::{format_duration_compact, format_memory};
 use super::styles::Palette;
@@ -46,8 +46,13 @@ fn tree_prefix(entry: &FlatEntry) -> String {
     prefix
 }
 
-/// Return the appropriate row style based on the entry's kind and root status.
+/// Return the appropriate row style based on the entry's kind, root status, and activity.
+///
+/// Idle root processes are dimmed so they visually recede behind actively-working ones.
 fn row_style(entry: &FlatEntry, palette: &Palette) -> Style {
+    if entry.is_root && entry.activity == Some(ActivityState::Idle) {
+        return palette.dim_style();
+    }
     match (&entry.kind, entry.is_root) {
         (Some(ProcessKind::Claude), true) => palette.claude_style(),
         (Some(ProcessKind::Codex), true) => palette.codex_style(),
@@ -55,7 +60,7 @@ fn row_style(entry: &FlatEntry, palette: &Palette) -> Style {
     }
 }
 
-/// Build the display name cell: tree prefix + expand indicator + process name.
+/// Build the display name cell: activity badge + tree prefix + expand indicator + name.
 fn name_cell(entry: &FlatEntry) -> String {
     let prefix = tree_prefix(entry);
     let indicator = if entry.has_children {
@@ -67,7 +72,24 @@ fn name_cell(entry: &FlatEntry) -> String {
     } else {
         ""
     };
-    format!("{}{}{}", prefix, indicator, display_name(&entry.info))
+
+    let badge = if entry.is_root {
+        match entry.activity {
+            Some(ActivityState::Active) => "● ",
+            Some(ActivityState::Idle) => "○ ",
+            _ => "",
+        }
+    } else {
+        ""
+    };
+
+    format!(
+        "{}{}{}{}",
+        badge,
+        prefix,
+        indicator,
+        display_name(&entry.info)
+    )
 }
 
 /// Format the CPU cell for a flat entry.
