@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
@@ -38,7 +38,10 @@ pub fn render_config_popup(
 ) {
     // Popup dimensions: wide enough for the longest label plus room for
     // the bullet and cursor; tall enough for both sections and a help line.
-    let area = centered_rect(44, 14, f.area());
+    // Height: 2 (top padding + graph header) + graph options + 1 (gap)
+    //       + 1 (theme header) + theme options + 2 (gap + help) + 2 (border).
+    let popup_height = 2 + GraphStyle::ALL.len() + 1 + 1 + Theme::ALL.len() + 2 + 2;
+    let area = centered_rect(44, popup_height as u16, f.area());
 
     // Clear the background behind the popup so table rows don't bleed through.
     f.render_widget(Clear, area);
@@ -62,11 +65,11 @@ fn build_lines<'a>(
     palette: &Palette,
 ) -> Vec<Line<'a>> {
     let section_style = palette.header_style();
-    let text_style = Style::new().fg(Color::White);
+    let text_style = Style::new().fg(palette.foreground);
     let cursor_style = Style::new()
         .fg(palette.claude)
         .add_modifier(Modifier::BOLD);
-    let dim_style = Style::new().fg(Color::DarkGray);
+    let dim_style = palette.dim_style();
     let active_style = Style::new()
         .fg(palette.codex)
         .add_modifier(Modifier::BOLD);

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     symbols::Marker,
     text::{Line, Span},
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Wrap},
@@ -15,8 +15,7 @@ use crate::process::info::ProcessInfo;
 use super::format::{format_duration_full, format_memory};
 use super::styles::{GraphStyle, Palette};
 
-/// Style for info-table value text.
-const VAL_STYLE: Style = Style::new().fg(Color::White);
+// No constants — all styles now come from Palette.
 
 /// Render a time-series chart with dot markers inside a bordered block.
 ///
@@ -90,7 +89,7 @@ fn render_chart(
 fn kv<'a>(key: &'a str, val: &'a str, palette: &Palette) -> Line<'a> {
     Line::from(vec![
         Span::styled(key, palette.label_style()),
-        Span::styled(val, VAL_STYLE),
+        Span::styled(val, Style::new().fg(palette.foreground)),
     ])
 }
 
@@ -267,7 +266,7 @@ fn render_command(f: &mut Frame, area: Rect, info: &ProcessInfo, palette: &Palet
     f.render_widget(
         Paragraph::new(cmd_text)
             .block(block)
-            .style(Style::new().fg(Color::White))
+            .style(Style::new().fg(palette.foreground))
             .wrap(Wrap { trim: false }),
         area,
     );

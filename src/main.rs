@@ -9,6 +9,7 @@ mod ui;
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Layout};
+use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
 use crate::app::{ActiveView, App};
@@ -201,6 +202,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     .areas(f.area());
 
     let palette = &app.palette;
+
+    // Fill the entire terminal with the theme's background color before any
+    // widgets render. This ensures light themes actually paint the background
+    // instead of leaving the terminal's default dark color showing through.
+    f.render_widget(Block::default().style(palette.base_style()), f.area());
 
     ui::render_status_bar(f, status_area, &app.system_stats);
 

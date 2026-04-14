@@ -1,6 +1,6 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -9,9 +9,6 @@ use ratatui::{
 use crate::app::ActiveView;
 
 use super::styles::Palette;
-
-/// Style for the description text following each key (e.g. ": Quit").
-const DESC_STYLE: Style = Style::new().fg(Color::DarkGray);
 
 /// Render a one-line footer showing context-sensitive key binding hints.
 pub fn render_footer(f: &mut Frame, area: Rect, active_view: &ActiveView, palette: &Palette) {
@@ -34,17 +31,17 @@ pub fn render_footer(f: &mut Frame, area: Rect, active_view: &ActiveView, palett
         ],
     };
 
-    // Theme-aware key color; keep the trailing description dim so the keys pop.
     let key_style = Style::new()
         .fg(palette.label)
         .add_modifier(Modifier::BOLD);
+    let desc_style = palette.dim_style();
 
     let spans: Vec<Span> = hints
         .iter()
         .flat_map(|(key, desc)| {
             [
                 Span::styled(*key, key_style),
-                Span::styled(*desc, DESC_STYLE),
+                Span::styled(*desc, desc_style),
             ]
         })
         .collect();

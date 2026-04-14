@@ -11,8 +11,6 @@ use super::styles::Palette;
 // Red stays hardcoded: "kill" is a destructive action and the color is
 // semantic, not thematic. Themes only change neutral chrome.
 const WARN_STYLE: Style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
-const TEXT_STYLE: Style = Style::new().fg(Color::White);
-const DIM_STYLE: Style = Style::new().fg(Color::DarkGray);
 
 /// Render a centered confirmation popup for killing a process.
 pub fn render_kill_confirm(f: &mut Frame, pid: u32, process_name: &str, palette: &Palette) {
@@ -21,11 +19,11 @@ pub fn render_kill_confirm(f: &mut Frame, pid: u32, process_name: &str, palette:
     // Clear the background behind the popup.
     f.render_widget(Clear, area);
 
-    // Border and title stay red for the kill popup (semantic), but use the
-    // themed label color for key hints so they harmonize with the rest.
     let key_style = Style::new()
         .fg(palette.label)
         .add_modifier(Modifier::BOLD);
+    let text_style = Style::new().fg(palette.foreground);
+    let dim_style = palette.dim_style();
 
     let block = Block::default()
         .title(" Kill Process ")
@@ -36,21 +34,21 @@ pub fn render_kill_confirm(f: &mut Frame, pid: u32, process_name: &str, palette:
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Kill ", TEXT_STYLE),
+            Span::styled("  Kill ", text_style),
             Span::styled(process_name, WARN_STYLE),
-            Span::styled(" (PID ", TEXT_STYLE),
+            Span::styled(" (PID ", text_style),
             Span::styled(pid.to_string(), WARN_STYLE),
-            Span::styled(")?", TEXT_STYLE),
+            Span::styled(")?", text_style),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Press ", DIM_STYLE),
+            Span::styled("  Press ", dim_style),
             Span::styled("y", key_style),
-            Span::styled(" to confirm, ", DIM_STYLE),
+            Span::styled(" to confirm, ", dim_style),
             Span::styled("n", key_style),
-            Span::styled(" or ", DIM_STYLE),
+            Span::styled(" or ", dim_style),
             Span::styled("Esc", key_style),
-            Span::styled(" to cancel", DIM_STYLE),
+            Span::styled(" to cancel", dim_style),
         ]),
     ];
 
@@ -71,7 +69,10 @@ pub fn render_kill_result(f: &mut Frame, message: &str, palette: &Palette) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(format!("  {}", message), TEXT_STYLE)),
+        Line::from(Span::styled(
+            format!("  {}", message),
+            Style::new().fg(palette.foreground),
+        )),
     ];
 
     f.render_widget(Paragraph::new(lines).block(block), area);
