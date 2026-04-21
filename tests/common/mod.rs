@@ -3,6 +3,10 @@
 //! Provides a [`make_process_info`] factory and a configurable [`TestProvider`]
 //! that can be reused across test files in future phases.
 
+// These helpers are intentionally provided for use in later test phases.
+// Not every item is consumed by the current test suite.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use agentop::process::ProcessInfo;

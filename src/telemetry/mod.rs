@@ -29,8 +29,13 @@
 //! to be `Sync`; they are never shared across threads. See
 //! [`TelemetryProvider`] for the full contract.
 
+pub mod claude;
 mod noop;
 mod types;
 
+pub use claude::ClaudeTelemetryProvider;
 pub use noop::NoopProvider;
 pub use types::{AgentStatus, AgentTelemetry, TelemetryMap, TelemetryPipeline, TelemetryProvider};
+
+// Re-export for UI detail view usage.
+pub use claude::parser::TranscriptAggregates;
