@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -209,6 +210,11 @@ pub struct App {
     pub activity_state: HashMap<u32, ActivityState>,
     /// Per-root-PID aggregate CPU history used for idle/active classification.
     pub aggregate_cpu_history: HashMap<u32, VecDeque<f32>>,
+    /// Per-root-PID timestamp of when the current activity state began.
+    ///
+    /// Populated by [`App::update_activity_states`] whenever the state transitions.
+    /// Used by the renderer to compute time-in-state duration for color escalation.
+    pub activity_state_since: HashMap<u32, Instant>,
     /// Whether the search/filter bar is currently accepting input.
     pub filter_active: bool,
     /// Current filter query text.
@@ -449,6 +455,8 @@ impl App {
         self.aggregate_cpu_history
             .retain(|pid, _| live_pids.contains(pid));
         self.activity_state.retain(|pid, _| live_pids.contains(pid));
+        self.activity_state_since
+            .retain(|pid, _| live_pids.contains(pid));
 
         // Keep the detail view in sync with live data.
         if let Some(ref mut detail) = self.selected_detail {
@@ -513,10 +521,11 @@ impl App {
     fn rebuild_flat_list(&mut self) {
         self.sort_flat_list();
 
-        // Inject activity state into root FlatEntry values.
+        // Inject activity state and time-in-state into root FlatEntry values.
         for entry in &mut self.flat_list {
             if entry.is_root {
                 entry.activity = self.activity_state.get(&entry.info.pid).copied();
+                entry.activity_since = self.activity_state_since.get(&entry.info.pid).copied();
             }
         }
 
@@ -525,7 +534,13 @@ impl App {
     }
 
     /// Update the idle/active classification for every root process in the forest.
-    fn update_activity_states(&mut self) {
+    ///
+    /// When the state transitions (e.g. `Idle` → `Active` → `Idle`), the
+    /// `activity_state_since` timestamp is reset to [`Instant::now`]. If the
+    /// state is unchanged the timestamp is left alone so the elapsed duration
+    /// continues to grow monotonically — a warning badge fires only after a
+    /// *continuous* idle period exceeds the threshold.
+    pub fn update_activity_states(&mut self) {
         for root in &self.forest {
             let pid = root.info.pid;
             let buf = self.aggregate_cpu_history.entry(pid).or_default();
@@ -534,7 +549,7 @@ impl App {
             }
             buf.push_back(root.info.cpu_usage);
 
-            let state = if buf.len() < IDLE_SAMPLE_WINDOW {
+            let new_state = if buf.len() < IDLE_SAMPLE_WINDOW {
                 ActivityState::Unknown
             } else {
                 let window_start = buf.len() - IDLE_SAMPLE_WINDOW;
@@ -548,7 +563,17 @@ impl App {
                     ActivityState::Active
                 }
             };
-            self.activity_state.insert(pid, state);
+
+            let old_state = self.activity_state.get(&pid).copied();
+            if old_state != Some(new_state) {
+                // State changed — reset the timer.
+                self.activity_state_since.insert(pid, Instant::now());
+            }
+            // Ensure the map has an entry even on first observation.
+            self.activity_state_since
+                .entry(pid)
+                .or_insert_with(Instant::now);
+            self.activity_state.insert(pid, new_state);
         }
     }
 

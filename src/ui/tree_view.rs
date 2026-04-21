@@ -1,8 +1,10 @@
 use ratatui::{
     layout::{Constraint, Rect},
     style::Style,
+    text::{Line, Span},
     widgets::{
-        Block, Borders, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+        TableState,
     },
     Frame,
 };
@@ -12,7 +14,7 @@ use crate::process::tree::FlatEntry;
 use crate::process::{display_name, ActivityState, ProcessKind};
 
 use super::format::{format_duration_compact, format_memory};
-use super::styles::Palette;
+use super::styles::{classify_idle, IdleTier, Palette};
 
 /// Column widths. CPU and Memory are wider to accommodate aggregate `"self (total)"` display.
 const WIDTHS: [Constraint; 7] = [
@@ -46,13 +48,13 @@ fn tree_prefix(entry: &FlatEntry) -> String {
     prefix
 }
 
-/// Return the appropriate row style based on the entry's kind, root status, and activity.
+/// Row style based on the entry's kind and root status.
 ///
-/// Idle root processes are dimmed so they visually recede behind actively-working ones.
+/// Root processes keep their brand color (Claude orange, Codex green) so
+/// users can identify the agent kind at a glance. The activity badge in
+/// [`name_cell`] carries its own color independent of the row — per the
+/// designer's "row color dominates; badge confirms" principle.
 fn row_style(entry: &FlatEntry, palette: &Palette) -> Style {
-    if entry.is_root && entry.activity == Some(ActivityState::Idle) {
-        return palette.dim_style();
-    }
     match (&entry.kind, entry.is_root) {
         (Some(ProcessKind::Claude), true) => palette.claude_style(),
         (Some(ProcessKind::Codex), true) => palette.codex_style(),
@@ -60,36 +62,97 @@ fn row_style(entry: &FlatEntry, palette: &Palette) -> Style {
     }
 }
 
-/// Build the display name cell: activity badge + tree prefix + expand indicator + name.
-fn name_cell(entry: &FlatEntry) -> String {
+/// Style for the activity badge glyph, independent of the row style.
+///
+/// Idle badges escalate with time-in-state per the designer's spec:
+/// Fresh → gray, Warning → yellow, Stale → red+bold. Active badges use a
+/// dimmed green that confirms rather than competes with the row color.
+fn badge_style(entry: &FlatEntry, palette: &Palette) -> Style {
+    match entry.activity {
+        Some(ActivityState::Active) => palette.activity_active_style(),
+        Some(ActivityState::Idle) => {
+            let tier = entry
+                .activity_since
+                .map(|t| classify_idle(t.elapsed()))
+                .unwrap_or(IdleTier::Fresh);
+            match tier {
+                IdleTier::Fresh => palette.activity_idle_fresh_style(),
+                IdleTier::Warning => palette.activity_idle_warning_style(),
+                IdleTier::Stale => palette.activity_idle_stale_style(),
+            }
+        }
+        Some(ActivityState::Unknown) | None => palette.activity_unknown_style(),
+    }
+}
+
+/// Format the idle-duration suffix for Warning and Stale tiers.
+///
+/// Returns `""` for Fresh, `"(Xm)"` for 1–59 minutes, or `"(1h+)"` for ≥ 60 minutes.
+fn idle_suffix(elapsed_secs: u64) -> String {
+    let mins = elapsed_secs / 60;
+    if mins == 0 {
+        String::new()
+    } else if mins < 60 {
+        format!(" ({mins}m)")
+    } else {
+        " (1h+)".to_string()
+    }
+}
+
+/// Build the display name cell as a multi-span line.
+///
+/// The activity badge is rendered in [`badge_style`] (independent of the row
+/// style) so it can signal urgency without overriding the brand color of the
+/// row. The remaining spans inherit the row style set by the table.
+///
+/// For idle root processes at Warning or Stale tier, a duration suffix is
+/// appended to the badge text to make the state self-describing without
+/// relying on color alone (accessibility).
+fn name_cell<'a>(entry: &'a FlatEntry, palette: &Palette) -> Line<'a> {
     let prefix = tree_prefix(entry);
     let indicator = if entry.has_children {
         if entry.expanded {
-            "▼ "
+            "\u{25bc} " // ▼
         } else {
-            "▶ "
+            "\u{25b6} " // ▶
         }
     } else {
         ""
     };
 
-    let badge = if entry.is_root {
+    let badge_text = if entry.is_root {
         match entry.activity {
-            Some(ActivityState::Active) => "● ",
-            Some(ActivityState::Idle) => "○ ",
-            _ => "",
+            Some(ActivityState::Active) => "\u{25cf} ".to_string(), // ●
+            Some(ActivityState::Idle) => {
+                let (tier, elapsed_secs) = entry
+                    .activity_since
+                    .map(|t| {
+                        let e = t.elapsed();
+                        (classify_idle(e), e.as_secs())
+                    })
+                    .unwrap_or((IdleTier::Fresh, 0));
+
+                match tier {
+                    IdleTier::Fresh => "\u{25cb} ".to_string(), // ○
+                    IdleTier::Warning | IdleTier::Stale => {
+                        format!("\u{25cb}{} ", idle_suffix(elapsed_secs)) // ○ (Xm)
+                    }
+                }
+            }
+            _ => String::new(),
         }
     } else {
-        ""
+        String::new()
     };
 
-    format!(
-        "{}{}{}{}",
-        badge,
-        prefix,
-        indicator,
-        display_name(&entry.info)
-    )
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(4);
+    if !badge_text.is_empty() {
+        spans.push(Span::styled(badge_text, badge_style(entry, palette)));
+    }
+    spans.push(Span::raw(prefix));
+    spans.push(Span::raw(indicator));
+    spans.push(Span::raw(display_name(&entry.info)));
+    Line::from(spans)
 }
 
 /// Format the CPU cell for a flat entry.
@@ -131,14 +194,14 @@ fn build_rows<'a>(flat_list: &'a [FlatEntry], palette: &Palette) -> Vec<Row<'a>>
         .iter()
         .map(|entry| {
             let cmd = entry.info.cmd.join(" ");
-            Row::new([
-                entry.info.pid.to_string(),
-                name_cell(entry),
-                cpu_cell(entry),
-                memory_cell(entry),
-                entry.info.status.clone(),
-                cmd,
-                format_duration_compact(entry.info.run_time),
+            Row::new(vec![
+                Cell::from(entry.info.pid.to_string()),
+                Cell::from(name_cell(entry, palette)),
+                Cell::from(cpu_cell(entry)),
+                Cell::from(memory_cell(entry)),
+                Cell::from(entry.info.status.clone()),
+                Cell::from(cmd),
+                Cell::from(format_duration_compact(entry.info.run_time)),
             ])
             .style(row_style(entry, palette))
         })

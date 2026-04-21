@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::filter::{is_target_process, process_kind, ActivityState, ProcessKind};
 use super::info::ProcessInfo;
@@ -56,6 +57,12 @@ pub struct FlatEntry {
     /// Activity state for root agent processes; `None` for non-root entries.
     /// Injected by `App::rebuild_flat_list` after flattening.
     pub activity: Option<ActivityState>,
+    /// The instant at which the current activity state began, for root entries.
+    ///
+    /// `None` for non-root entries and for roots where the state has not yet
+    /// been recorded (e.g. the very first tick). Injected by
+    /// `App::rebuild_flat_list` alongside `activity`.
+    pub activity_since: Option<Instant>,
 }
 
 // ---------------------------------------------------------------------------
@@ -198,8 +205,9 @@ fn flatten_node(node: &ProcessNode, out: &mut Vec<FlatEntry>, is_last_sibling: b
         // Copy the pre-computed aggregate so the flat list can render rollups
         // and the detail view can display subtree totals without re-traversing.
         subtree_stats: node.subtree_stats,
-        // Activity is injected by App::rebuild_flat_list after flattening.
+        // Activity and activity_since are injected by App::rebuild_flat_list after flattening.
         activity: None,
+        activity_since: None,
     });
 
     if node.expanded {
