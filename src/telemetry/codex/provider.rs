@@ -209,8 +209,8 @@ impl TelemetryProvider for CodexTelemetryProvider {
                 last_stop_reason: None, // Not available in Codex rollout format.
                 subagent_count: 0,      // Codex does not have subagent task files.
                 status: Some(status),
-                decay_score: None,           // Not computed for Codex sessions.
-                recent_messages: Vec::new(), // Not available in Codex rollout format.
+                decay_score: None, // Not computed for Codex sessions.
+                recent_messages: agg.recent_messages.clone(),
             };
 
             out.insert(pid, telemetry);

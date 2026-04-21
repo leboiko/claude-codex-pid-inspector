@@ -26,7 +26,14 @@ use std::collections::HashSet;
 use std::io::{self, BufRead, Seek, SeekFrom};
 use std::path::Path;
 
-use super::schema::{EventMsgPayload, ResponseItemPayload, RolloutItem};
+use super::schema::{EventMsgPayload, MessageContentBlock, ResponseItemPayload, RolloutItem};
+use crate::telemetry::types::RecentMessage;
+use crate::ui::truncate_chars;
+
+/// Maximum number of recent assistant messages retained for the detail view.
+const MAX_RECENT_MESSAGES: usize = 5;
+/// Maximum number of characters kept from a message's first text block.
+const PREVIEW_MAX_CHARS: usize = 120;
 
 /// Accumulated telemetry derived from a Codex rollout file.
 ///
@@ -63,6 +70,9 @@ pub struct RolloutAggregates {
     pub last_tool_call_name: Option<String>,
     /// Session ID from the `session_meta` line (first line only).
     pub session_id: Option<String>,
+    /// Ring buffer of the latest assistant messages, capped at five entries.
+    /// Used for the TUI detail view only; never serialised to `--json`.
+    pub recent_messages: Vec<RecentMessage>,
 }
 
 impl RolloutAggregates {
@@ -230,6 +240,28 @@ pub fn apply_items(items: Vec<RolloutItem>, agg: &mut RolloutAggregates) {
             }
 
             RolloutItem::ResponseItem(ri) => match ri.payload {
+                ResponseItemPayload::Message(m) => {
+                    // Only assistant messages surface in the detail view. User
+                    // and developer messages carry prompts and file dumps that
+                    // we deliberately don't show — they're noisy and, more
+                    // importantly, private.
+                    if m.role == "assistant" {
+                        if let Some(preview) = first_output_text(&m.content) {
+                            let rm = RecentMessage {
+                                timestamp: ri.timestamp.clone(),
+                                model: agg.model.clone().unwrap_or_default(),
+                                // Codex rollout has no per-message stop
+                                // reason; leave None.
+                                stop_reason: None,
+                                preview,
+                            };
+                            if agg.recent_messages.len() >= MAX_RECENT_MESSAGES {
+                                agg.recent_messages.remove(0);
+                            }
+                            agg.recent_messages.push(rm);
+                        }
+                    }
+                }
                 ResponseItemPayload::FunctionCall(fc) | ResponseItemPayload::CustomToolCall(fc) => {
                     if !fc.call_id.is_empty() {
                         agg.unresolved_call_ids.insert(fc.call_id.clone());
@@ -259,6 +291,22 @@ pub fn apply_items(items: Vec<RolloutItem>, agg: &mut RolloutAggregates) {
         // Use the most recently named tool for display.
         agg.last_tool_call_name.clone()
     };
+}
+
+/// Return a truncated preview of the first `output_text` block in a
+/// message's content, or `None` if the message has no displayable text.
+///
+/// Newlines are collapsed to spaces so the preview fits on one line.
+fn first_output_text(content: &[MessageContentBlock]) -> Option<String> {
+    for block in content {
+        if let MessageContentBlock::OutputText { text } = block {
+            if !text.is_empty() {
+                let truncated = truncate_chars(text, PREVIEW_MAX_CHARS);
+                return Some(truncated.replace('\n', " "));
+            }
+        }
+    }
+    None
 }
 
 /// Emit a debug message to stderr when `AGENTOP_DEBUG=1`.

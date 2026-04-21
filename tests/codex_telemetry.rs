@@ -121,6 +121,32 @@ fn fixture_truncated_parses_correctly() {
     assert_eq!(agg.output_tokens, 10);
 }
 
+#[test]
+fn fixture_session_with_messages_captures_only_assistant_messages() {
+    // Regression test: Codex telemetry must populate `recent_messages` from
+    // `response_item.message` events, same as the Claude provider does for
+    // the detail panel. Only assistant messages surface; user and developer
+    // messages are deliberately ignored.
+    let content = read_fixture("session_with_messages.jsonl");
+    let items = parse_fixture_items(&content);
+    let mut agg = RolloutAggregates::default();
+    apply_items(items, &mut agg);
+
+    assert_eq!(
+        agg.recent_messages.len(),
+        2,
+        "only the two assistant messages should be captured"
+    );
+    let first = &agg.recent_messages[0];
+    assert_eq!(first.model, "gpt-5.4");
+    assert_eq!(first.timestamp, "2026-04-21T10:00:03Z");
+    assert!(first.preview.starts_with("Sure"));
+    assert!(first.stop_reason.is_none());
+
+    let second = &agg.recent_messages[1];
+    assert!(second.preview.contains("extracted"));
+}
+
 // ---------------------------------------------------------------------------
 // Provider integration tests with a synthetic session tree
 // ---------------------------------------------------------------------------

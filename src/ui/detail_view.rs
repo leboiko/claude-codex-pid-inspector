@@ -229,8 +229,12 @@ pub fn render_detail_view(
     palette: &Palette,
     telemetry: Option<&AgentTelemetry>,
 ) {
-    // Show Claude-specific sections only when there is real telemetry data.
-    let show_claude = telemetry.is_some_and(|t| t.has_data());
+    // The agent-specific sections render whenever the row has real telemetry
+    // data, Claude or Codex. The health bar and subagent summary are further
+    // gated on fields the Codex provider leaves as None / 0.
+    let show_agent_telemetry = telemetry.is_some_and(|t| t.has_data());
+    let show_health = telemetry.is_some_and(|t| t.decay_score.is_some());
+    let show_subagents = telemetry.is_some_and(|t| t.subagent_count > 0);
 
     // The info table grows by 3 rows when subtree stats are present.
     let info_height = if subtree_stats.is_some() { 15 } else { 12 };
@@ -243,12 +247,16 @@ pub fn render_detail_view(
         Constraint::Length(4),           // Command
     ];
 
-    if show_claude {
+    if show_agent_telemetry {
         constraints.push(Constraint::Length(6)); // Token stats
-        constraints.push(Constraint::Length(3)); // Health/decay score
+        if show_health {
+            constraints.push(Constraint::Length(3)); // Health/decay score
+        }
         constraints.push(Constraint::Length(3)); // Pending tool
         constraints.push(Constraint::Min(10)); // Recent messages
-        constraints.push(Constraint::Length(3)); // Subagent summary
+        if show_subagents {
+            constraints.push(Constraint::Length(3)); // Subagent summary
+        }
     }
 
     let sections = Layout::default()
@@ -306,14 +314,23 @@ pub fn render_detail_view(
 
     render_command(f, sections[4], info, palette);
 
-    // --- Claude-specific telemetry sections ----------------------------------
-    if show_claude {
+    // --- Agent-specific telemetry sections (Claude and Codex) ----------------
+    if show_agent_telemetry {
         if let Some(tel) = telemetry {
-            render_token_stats(f, sections[5], tel, palette);
-            render_health_bar(f, sections[6], tel, palette);
-            render_pending_tool(f, sections[7], tel, palette);
-            render_recent_messages(f, sections[8], tel, palette);
-            render_subagent_summary(f, sections[9], tel, palette);
+            let mut idx = 5;
+            render_token_stats(f, sections[idx], tel, palette);
+            idx += 1;
+            if show_health {
+                render_health_bar(f, sections[idx], tel, palette);
+                idx += 1;
+            }
+            render_pending_tool(f, sections[idx], tel, palette);
+            idx += 1;
+            render_recent_messages(f, sections[idx], tel, palette);
+            idx += 1;
+            if show_subagents {
+                render_subagent_summary(f, sections[idx], tel, palette);
+            }
         }
     }
 }
