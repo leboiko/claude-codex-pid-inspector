@@ -1,6 +1,6 @@
 [package]
 name = "agentop"
-version = "0.7.1"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.85"
 description = "A TUI process inspector for Claude Code and OpenAI Codex CLI — like top for AI coding agents"
