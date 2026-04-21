@@ -1,0 +1,32 @@
+[book]
+title = "agentop"
+authors = ["Luis Boiko"]
+description = "A TUI process inspector for Claude Code and OpenAI Codex CLI — like top for AI coding agents"
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/leboiko/claude-codex-pid-inspector"
+edit-url-template = "https://github.com/leboiko/claude-codex-pid-inspector/edit/master/book/{path}"
+site-url = "/claude-codex-pid-inspector/"
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+copy-fonts = true
+additional-css = ["theme/custom.css"]
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+copyable = true
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
