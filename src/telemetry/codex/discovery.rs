@@ -185,7 +185,11 @@ fn read_codex_home_linux(pid: u32) -> Option<String> {
 /// Extract the value of `CODEX_HOME` from a space-separated environment string.
 ///
 /// Used for macOS `ps eww` output where environment variables are appended
-/// after the command line as space-separated `KEY=VALUE` tokens.
+/// after the command line as space-separated `KEY=VALUE` tokens. Unused on
+/// Linux, which reads `/proc/{pid}/environ` directly — the `#[allow]` keeps
+/// the Linux build warning-free while the tests (which always run) keep the
+/// function exercised.
+#[allow(dead_code)]
 fn extract_codex_home_from_env_string(s: &str) -> Option<String> {
     // The environment block is appended after a space following the argv.
     // Scan for the CODEX_HOME token.
