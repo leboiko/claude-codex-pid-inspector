@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Codex CLI telemetry** (Phase 3): each detected Codex CLI root process is
+  now enriched with data read incrementally from its on-disk rollout file
+  (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`). Exposed in the TUI,
+  detail panel, and `--json` output:
+  - cumulative input/output/cache tokens and an estimate of context window
+    utilisation derived from the `token_count` events in the rollout file
+  - a cost-in-USD estimate from a pricing table pinned at `2026-04-21`
+    covering GPT-5, o4-mini, o4, o3-mini, o3, GPT-4.1, GPT-4o, and GPT-4
+    model families; all costs flagged as estimated
+  - the name of the pending tool call when a `function_call` or
+    `custom_tool_call` has no matching output yet
+  - `kind: "codex"` in `--json` output (Claude sessions emit `kind: "claude"`)
+  - `CODEX_HOME` resolution from the live process environment (macOS `ps eww`,
+    Linux `/proc/{pid}/environ`) with fallback to `~/.codex`
+  - PID-to-rollout-file correlation via filename timestamp (±90 s) — no
+    pidfile required
+  - Incremental tailing: only new bytes are read each tick; file truncation
+    (session restart) resets aggregates automatically
+  - Privacy: tool `arguments` and tool `output` fields are never deserialized
+    or stored
 - **Claude telemetry**: each detected Claude Code root process is now enriched
   with data read from its on-disk state (`~/.claude/sessions/{pid}.json` and
   `~/.claude/projects/**/*.jsonl`). Exposed in the TUI, detail panel, and

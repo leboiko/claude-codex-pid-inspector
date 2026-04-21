@@ -15,7 +15,10 @@ use agentop::output::{
 };
 use agentop::process::{build_forest, display_name, ProcessInfo, ProcessScanner, SystemStats};
 use agentop::telemetry::claude::discovery::SessionIndex;
-use agentop::telemetry::{ClaudeTelemetryProvider, NoopProvider, TelemetryMap, TelemetryPipeline};
+use agentop::telemetry::codex::discovery::CodexHomeResolver;
+use agentop::telemetry::{
+    ClaudeTelemetryProvider, CodexTelemetryProvider, NoopProvider, TelemetryMap, TelemetryPipeline,
+};
 use agentop::{tui, ui};
 
 /// Entry point: parse arguments, then dispatch to the appropriate mode.
@@ -71,16 +74,23 @@ fn run_one_shot(args: &Cli) -> color_eyre::Result<()> {
     std::thread::sleep(Duration::from_millis(500));
     let (processes, stats) = scanner.refresh();
 
-    // Mirror the TUI's provider selection: enable the Claude provider when
-    // its on-disk state directory exists, otherwise stay with the noop so
-    // one-shot output works identically on machines without Claude installed.
+    // Mirror the TUI's provider selection: enable Claude and Codex providers
+    // when their on-disk state directories exist. Fall back to NoopProvider on
+    // machines with neither installed.
     let mut pipeline = {
-        let probe = SessionIndex::new();
-        if probe.sessions_dir_exists() {
-            TelemetryPipeline::new().with_provider(Box::new(ClaudeTelemetryProvider::new()))
-        } else {
-            TelemetryPipeline::new().with_provider(Box::new(NoopProvider))
+        let mut p = TelemetryPipeline::new();
+        let claude_probe = SessionIndex::new();
+        if claude_probe.sessions_dir_exists() {
+            p = p.with_provider(Box::new(ClaudeTelemetryProvider::new()));
         }
+        let codex_probe = CodexHomeResolver::new();
+        if codex_probe.default_sessions_dir_exists() {
+            p = p.with_provider(Box::new(CodexTelemetryProvider::new()));
+        }
+        if p.provider_names().is_empty() {
+            p = p.with_provider(Box::new(NoopProvider));
+        }
+        p
     };
     let telemetry = pipeline.enrich(&processes);
 
@@ -266,16 +276,23 @@ fn scanner_task(
     // so the first call to refresh() will yield meaningful CPU deltas.
     let mut scanner = ProcessScanner::new();
 
-    // Build the telemetry pipeline. Register ClaudeTelemetryProvider when
-    // ~/.claude/sessions/ exists on this machine; otherwise fall back to
-    // NoopProvider so the tool works on machines without Claude installed.
+    // Build the telemetry pipeline. Register Claude and Codex providers when
+    // their on-disk state directories exist. Fall back to NoopProvider on
+    // machines with neither installed.
     let mut pipeline = {
-        let probe = SessionIndex::new();
-        if probe.sessions_dir_exists() {
-            TelemetryPipeline::new().with_provider(Box::new(ClaudeTelemetryProvider::new()))
-        } else {
-            TelemetryPipeline::new().with_provider(Box::new(NoopProvider))
+        let mut p = TelemetryPipeline::new();
+        let claude_probe = SessionIndex::new();
+        if claude_probe.sessions_dir_exists() {
+            p = p.with_provider(Box::new(ClaudeTelemetryProvider::new()));
         }
+        let codex_probe = CodexHomeResolver::new();
+        if codex_probe.default_sessions_dir_exists() {
+            p = p.with_provider(Box::new(CodexTelemetryProvider::new()));
+        }
+        if p.provider_names().is_empty() {
+            p = p.with_provider(Box::new(NoopProvider));
+        }
+        p
     };
 
     // Grab the handle to the current Tokio runtime so we can block on async
