@@ -1,0 +1,5 @@
+{"type":"session_meta","timestamp":"2026-04-21T10:00:00Z","payload":{"id":"msg-fixture-0000","timestamp":"2026-04-21T10:00:00Z","cwd":"/tmp","originator":"codex","cli_version":"0.121.0","source":"cli","model_provider":"openai","base_instructions":{"text":"x"}}}
+{"type":"turn_context","timestamp":"2026-04-21T10:00:01Z","payload":{"turn_id":"t1","cwd":"/tmp","current_date":"2026-04-21","timezone":"UTC","approval_policy":"never","sandbox_policy":{"type":"workspace-write"},"model":"gpt-5.4"}}
+{"type":"response_item","timestamp":"2026-04-21T10:00:02Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Help me refactor this."}]}}
+{"type":"response_item","timestamp":"2026-04-21T10:00:03Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Sure — I'll read the file first and outline the plan."}]}}
+{"type":"response_item","timestamp":"2026-04-21T10:00:05Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I extracted the shared helper into a new module and updated the callers."}]}}

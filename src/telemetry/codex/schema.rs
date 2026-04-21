@@ -215,7 +215,8 @@ pub struct ResponseItemPayloadWrapper {
 /// Payload of a `response_item` line.
 ///
 /// The inner `type` field selects the variant. Types we do not need for
-/// telemetry (`message`, `reasoning`) are folded into [`ResponseItemPayload::Other`].
+/// telemetry (`reasoning`, and anything unrecognised) are folded into
+/// [`ResponseItemPayload::Other`].
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItemPayload {
@@ -227,7 +228,44 @@ pub enum ResponseItemPayload {
     CustomToolCall(FunctionCallPayload),
     /// The result of a custom tool invocation.
     CustomToolCallOutput(FunctionCallOutputPayload),
+    /// A model / user / developer message. Only the role and the text of
+    /// output_text blocks are captured; input_text content (prompts, file
+    /// dumps) is deliberately read but only surfaces in the in-process
+    /// RecentMessage ring buffer for the TUI detail view — never in
+    /// `--json` output.
+    Message(MessagePayload),
     /// Any other response item type — ignored.
+    #[serde(other)]
+    Other,
+}
+
+/// Payload of a `response_item.message` event.
+#[derive(Debug, Deserialize)]
+pub struct MessagePayload {
+    /// `"assistant"`, `"user"`, or `"developer"`.
+    #[serde(default)]
+    pub role: String,
+    /// Content blocks. Most assistant messages have exactly one
+    /// `output_text` block; user/developer messages carry `input_text`.
+    #[serde(default)]
+    pub content: Vec<MessageContentBlock>,
+}
+
+/// One content block inside a `response_item.message`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessageContentBlock {
+    /// Text the model generated.
+    OutputText {
+        #[serde(default)]
+        text: String,
+    },
+    /// Text sent into the model (prompts, file contents).
+    InputText {
+        #[serde(default)]
+        text: String,
+    },
+    /// Any other block type (images, reasoning summaries, ...).
     #[serde(other)]
     Other,
 }
