@@ -74,15 +74,17 @@ jobs:
 
   build-macos:
     name: Build macOS (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
+    # Both targets build on macos-latest (Apple Silicon). The x86_64 target
+    # cross-compiles via `rustup target add x86_64-apple-darwin` — the host
+    # toolchain and `strip` both handle it natively. macos-13 (Intel) runners
+    # have a long queue time on GitHub Actions and were blocking releases.
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-apple-darwin
-            runner: macos-13
-          - target: aarch64-apple-darwin
-            runner: macos-latest
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v6
 
