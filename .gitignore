@@ -1,3 +1,26 @@
 /target
 blog-post.md
 .claude/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor swap / backup files
+*.swp
+*.swo
+*~
+.#*
+\#*#
+
+# IDE / editor directories
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+
+# Rust build artifacts
+**/*.rs.bk
