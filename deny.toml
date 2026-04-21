@@ -13,16 +13,17 @@ targets = [
 # ---- Advisories ---------------------------------------------------------------
 
 [advisories]
-# Deny crates with known security vulnerabilities.
 version = 2
+# Deny crates whose versions have been yanked from the registry.
 yanked = "deny"
-unmaintained = "deny"
-unsound = "warn"
+# Scope of the unmaintained check: audit all transitive deps.
+unmaintained = "all"
 
 # ---- Licenses -----------------------------------------------------------------
 
 [licenses]
 version = 2
+# Crates not matching any of these licenses fail the build.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -36,25 +37,17 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
 ]
-# Reject anything not in the allow list.
-deny = []
-# Treat unlicensed crates as an error.
-unlicensed = "deny"
-# Warn on copyleft licenses that snuck in via transitive deps.
-copyleft = "warn"
-# Allow dual-licensed crates where at least one license is in the allow list.
-allow-osi-fsf-free = "neither"
-default = "deny"
+# Require at least 80% confidence when SPDX-matching a license file.
 confidence-threshold = 0.8
 
 # ---- Bans ---------------------------------------------------------------------
 
 [bans]
-# Deny multiple versions of the same crate above threshold.
+# Warn if multiple versions of the same crate end up in the graph.
 multiple-versions = "warn"
 # Wildcards in Cargo.toml are a red flag.
 wildcards = "deny"
-# Highlight when features enable additional deps.
+# Highlight the worst offender when a feature pulls extra deps.
 highlight = "all"
 
 deny = [
