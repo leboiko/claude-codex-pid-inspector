@@ -20,6 +20,11 @@ pub struct ProcessInfo {
     /// Working directory of the process, if available.
     pub cwd: Option<String>,
     /// CPU usage as a percentage (0.0 – 100.0 × core-count).
+    ///
+    /// This value is a **3-sample rolling average** computed by
+    /// [`ProcessScanner`](crate::process::ProcessScanner). Raw per-tick CPU
+    /// readings from `sysinfo` are noisy; averaging the last three samples
+    /// smooths transient spikes without introducing significant lag.
     pub cpu_usage: f32,
     /// Resident memory in bytes.
     pub memory_bytes: u64,

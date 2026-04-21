@@ -1,16 +1,21 @@
+use std::io::Write;
 use std::time::Duration;
 
+use clap::CommandFactory;
+use clap_complete::generate;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
 use agentop::app::{ActiveView, App, KeyContext};
+use agentop::cli::{self, Cli};
 use agentop::event::{Event, EventHandler};
-use agentop::process::{display_name, ProcessInfo, ProcessScanner, SystemStats};
+use agentop::output::{build_snapshot, print_table, to_compact_json, to_pretty_json};
+use agentop::process::{build_forest, display_name, ProcessInfo, ProcessScanner, SystemStats};
 use agentop::telemetry::{NoopProvider, TelemetryMap, TelemetryPipeline};
 use agentop::{tui, ui};
 
-/// Entry point: install hooks, init the terminal, run the app, then restore.
+/// Entry point: parse arguments, then dispatch to the appropriate mode.
 ///
 /// # Errors
 ///
@@ -18,30 +23,115 @@ use agentop::{tui, ui};
 /// terminal restoration.
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("agentop {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("agentop {}", env!("CARGO_PKG_VERSION"));
-        println!("A TUI process inspector for Claude Code and OpenAI Codex CLI\n");
-        println!("Usage: agentop\n");
-        println!("Options:");
-        println!("  -h, --help     Show this help message");
-        println!("  -V, --version  Print version");
+    let args = cli::parse();
+
+    // Shell completions: print and exit before touching the terminal.
+    if let Some(shell) = args.generate_completions {
+        let mut cmd = Cli::command();
+        generate(
+            clap_complete::Shell::from(shell),
+            &mut cmd,
+            "agentop",
+            &mut std::io::stdout(),
+        );
         return Ok(());
     }
 
-    // Install the panic hook first so that any subsequent panic leaves the
-    // terminal in a usable state and prints a formatted diagnostic.
+    // Non-interactive output modes share the two-sample CPU warm-up logic.
+    if args.list || args.json {
+        run_one_shot(&args)?;
+        return Ok(());
+    }
+
+    // Default: interactive TUI.
     tui::install_panic_hook();
-
     let mut terminal = tui::init()?;
-    run(&mut terminal).await?;
+    run_tui(&mut terminal).await?;
     tui::restore()?;
 
     Ok(())
+}
+
+/// Perform a two-sample scan, then print the requested non-interactive output.
+///
+/// sysinfo CPU deltas require two refresh calls separated by a short interval;
+/// without this, all CPU readings are 0.0 on the first (and only) call.
+///
+/// # Errors
+///
+/// Returns an error if JSON serialisation or stdout I/O fails.
+fn run_one_shot(args: &Cli) -> color_eyre::Result<()> {
+    let mut scanner = ProcessScanner::new();
+    // First refresh seeds the CPU counters.
+    let _ = scanner.refresh();
+    // Brief pause so the second delta is meaningful.
+    std::thread::sleep(Duration::from_millis(500));
+    let (processes, stats) = scanner.refresh();
+
+    let mut forest = build_forest(&processes);
+
+    // Compute agent summary from the forest (mirrors App::compute_agent_summary).
+    let summary = compute_summary_from_forest(&forest);
+
+    // Sort roots by CPU descending for a sensible default order.
+    forest.sort_by(|a, b| {
+        b.subtree_stats
+            .total_cpu
+            .partial_cmp(&a.subtree_stats.total_cpu)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    if args.list {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        print_table(&forest, &mut lock)?;
+        return Ok(());
+    }
+
+    if args.json {
+        // Build snapshot with empty activity maps — one-shot mode does not run
+        // the App state machine, so no history is available.
+        let snapshot = build_snapshot(
+            &forest,
+            &stats,
+            &summary,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        );
+        let json = if args.pretty {
+            to_pretty_json(&snapshot)?
+        } else {
+            to_compact_json(&snapshot)?
+        };
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        writeln!(lock, "{json}")?;
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+/// Compute an [`agentop::app::AgentSummary`] from the forest without needing
+/// a full [`App`] instance.
+fn compute_summary_from_forest(
+    forest: &[agentop::process::ProcessNode],
+) -> agentop::app::AgentSummary {
+    use agentop::app::AgentSummary;
+    use agentop::process::process_kind;
+    use agentop::process::ProcessKind;
+
+    let mut summary = AgentSummary::default();
+    for root in forest {
+        match process_kind(&root.info) {
+            Some(ProcessKind::Claude) => summary.claude_count += 1,
+            Some(ProcessKind::Codex) => summary.codex_count += 1,
+            None => {}
+        }
+        summary.total_cpu += root.subtree_stats.total_cpu;
+        summary.total_memory += root.subtree_stats.total_memory;
+    }
+    summary
 }
 
 /// Application loop: drives events, scanner, state updates, and rendering.
@@ -56,7 +146,7 @@ async fn main() -> color_eyre::Result<()> {
 ///
 /// Returns an error if the event channel closes unexpectedly or if ratatui
 /// fails to draw a frame.
-async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
+async fn run_tui(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     let mut app = App::new();
     let mut event_handler = EventHandler::new(Duration::from_secs(2), Duration::from_millis(33));
 
