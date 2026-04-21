@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Claude telemetry**: each detected Claude Code root process is now enriched
+  with data read from its on-disk state (`~/.claude/sessions/{pid}.json` and
+  `~/.claude/projects/**/*.jsonl`). Exposed in the TUI, detail panel, and
+  `--json` output:
+  - cumulative input/output/cache tokens and an estimate of the current
+    context window utilisation
+  - a cost-in-USD estimate derived from a pricing table pinned at
+    `2026-04-21` (Opus 4.7, Sonnet 4.x, Haiku 4.5) — costs are flagged as
+    estimated
+  - the name of the pending tool call (if the session is awaiting approval),
+    the last model `stop_reason`, and the count of active subagent tasks
+  - an inferred `AgentStatus` (processing / needs_input / waiting_input /
+    idle) combining CPU pressure with transcript signals
+- **Agent view** (`T` key): swaps `CPU%`/`Memory`/`Command` for
+  `Ctx%`/`Cost`/`Tokens`/`Tool` columns so the agent-specific telemetry is
+  first-class in the table. Base view remains the default and is unchanged.
+  Status bar and footer show when the agent view is active.
+- **Pending-tool badge**: a `⚑` badge appears in the Name cell next to the
+  activity badge when a Claude session is awaiting tool-call approval.
+- **Extended detail panel** for Claude sessions: token stats, a 20-cell
+  decay-score bar (`Decay NN`), the pending tool call's name and truncated
+  input, a scrollable list of recent assistant messages, and a subagent
+  summary. Non-Claude rows keep their existing detail layout.
+- `telemetry` sub-object added to each process entry in the `--json` schema
+  (additive; `schema_version` stays at `1`). Documented in
+  `docs/output-schema.md` together with the privacy guarantee: we serialize
+  only aggregate counters, never transcript content.
+- Char-safe `truncate_chars` helper in `ui/format.rs` for clipping
+  user-facing text without risking a panic mid-grapheme.
 - `--list` flag: prints a plain-text process table (PID, NAME, CPU%, MEM,
   STATUS, UPTIME) to stdout and exits. The NAME column uses box-drawing tree
   connectors matching the TUI view. Width adapts to the terminal when stdout
@@ -53,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macros. `--version` / `-V`, `--help` / `-h` behavior is preserved;
   `--json` and `--list` are mutually exclusive via a clap `ArgGroup`.
 - Pinned MSRV to Rust 1.85.
+
+### Fixed
+- Transcript preview no longer panics when the 80-character truncation
+  boundary lands inside a multi-byte UTF-8 sequence (e.g. an em dash). A
+  regression test in `telemetry::claude::parser` guards the fix.
 
 ## [0.7.1] - 2026-04-13
 
