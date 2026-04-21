@@ -10,6 +10,7 @@ use crate::process::{
     toggle_expand, ActivityState, FlatEntry, ProcessInfo, ProcessKind, ProcessNode, SubtreeStats,
     SystemStats,
 };
+use crate::telemetry::TelemetryMap;
 use crate::ui::styles::{GraphStyle, Palette, Theme};
 
 /// Maximum number of historical CPU/memory samples retained per process.
@@ -180,9 +181,9 @@ pub struct App {
     pub selected_detail: Option<ProcessInfo>,
     /// Subtree statistics for the selected process; `None` until a row is selected.
     pub selected_detail_subtree: Option<SubtreeStats>,
-    /// Rolling CPU-usage history per PID (percentage, up to [`HISTORY_LEN`] samples).
+    /// Rolling CPU-usage history per PID (percentage, up to `HISTORY_LEN` samples).
     pub cpu_history: HashMap<u32, VecDeque<f32>>,
-    /// Rolling resident-memory history per PID (bytes, up to [`HISTORY_LEN`] samples).
+    /// Rolling resident-memory history per PID (bytes, up to `HISTORY_LEN` samples).
     pub mem_history: HashMap<u32, VecDeque<u64>>,
     /// Active sort column.
     pub sort_column: SortColumn,
@@ -212,6 +213,12 @@ pub struct App {
     pub filter_active: bool,
     /// Current filter query text.
     pub filter_text: String,
+    /// Per-PID telemetry enriched by the telemetry pipeline on each tick.
+    ///
+    /// Keyed by PID; entries are pruned alongside `cpu_history` when a process
+    /// exits. Phase 0 always delivers an empty map (only the [`crate::telemetry::NoopProvider`]
+    /// is registered); Phase 2/3 will populate real values.
+    pub telemetry: TelemetryMap,
 }
 
 impl App {
@@ -408,9 +415,18 @@ impl App {
     ///
     /// # Arguments
     ///
-    /// * `processes` - Complete flat list of process snapshots from the current refresh.
-    pub fn update_processes(&mut self, processes: Vec<ProcessInfo>, stats: SystemStats) {
+    /// * `processes`  - Complete flat list of process snapshots from the current refresh.
+    /// * `stats`      - System-wide resource snapshot.
+    /// * `telemetry`  - Per-PID telemetry map produced by the telemetry pipeline.
+    pub fn update_processes(
+        &mut self,
+        processes: Vec<ProcessInfo>,
+        stats: SystemStats,
+        telemetry: TelemetryMap,
+    ) {
         self.system_stats = stats;
+        self.telemetry = telemetry;
+
         // Snapshot expansion state before rebuilding so the user's open/close choices survive.
         let old_expansion = collect_expansion(&self.forest);
 
@@ -420,6 +436,8 @@ impl App {
         let live_pids: HashSet<u32> = processes.iter().map(|p| p.pid).collect();
         self.cpu_history.retain(|pid, _| live_pids.contains(pid));
         self.mem_history.retain(|pid, _| live_pids.contains(pid));
+        // Prune telemetry alongside cpu/mem history so stale PIDs don't accumulate.
+        self.telemetry.retain(|pid, _| live_pids.contains(pid));
 
         self.forest = build_forest(&processes);
         preserve_expansion(&mut self.forest, &old_expansion);

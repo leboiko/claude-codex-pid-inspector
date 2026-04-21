@@ -54,7 +54,7 @@ pub struct FlatEntry {
     /// Aggregated CPU, memory, and count copied from the corresponding [`ProcessNode`].
     pub subtree_stats: SubtreeStats,
     /// Activity state for root agent processes; `None` for non-root entries.
-    /// Injected by [`crate::app::App::rebuild_flat_list`] after flattening.
+    /// Injected by `App::rebuild_flat_list` after flattening.
     pub activity: Option<ActivityState>,
 }
 
