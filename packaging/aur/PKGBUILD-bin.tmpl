@@ -1,0 +1,33 @@
+# Maintainer: Luis Boiko <luiseduardo.boiko@gmail.com>
+# Generated from packaging/aur/PKGBUILD-bin.tmpl by scripts/render-aur-pkgbuild.sh
+# Do not edit the generated file directly.
+
+pkgname=agentop-bin
+pkgver={{VERSION}}
+pkgrel=1
+pkgdesc="TUI process inspector for Claude Code and OpenAI Codex CLI"
+arch=('x86_64' 'aarch64')
+url="https://github.com/leboiko/claude-codex-pid-inspector"
+license=('MIT')
+provides=('agentop')
+conflicts=('agentop')
+options=('!strip')
+
+source_x86_64=(
+  "{{URL_X86_64_LINUX_GNU}}"
+)
+sha256sums_x86_64=('{{SHA256_X86_64_LINUX_GNU}}')
+
+source_aarch64=(
+  "{{URL_AARCH64_LINUX_GNU}}"
+)
+sha256sums_aarch64=('{{SHA256_AARCH64_LINUX_GNU}}')
+
+package() {
+  install -Dm755 agentop "$pkgdir/usr/bin/agentop"
+
+  # Install the MIT license for Arch packaging convention.
+  if [ -f LICENSE ]; then
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  fi
+}
