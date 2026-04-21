@@ -14,17 +14,18 @@ use super::styles::Palette;
 ///
 /// When `filter_active` is `true` **or** `filter_text` is non-empty, the footer
 /// displays the live search query with a block-cursor indicator instead of the
-/// normal key hints. This lets the user see the current filter even if they
-/// tabbed away from the filter bar temporarily.
+/// normal key hints.
 ///
 /// # Arguments
 ///
-/// * `f`           - Ratatui frame.
-/// * `area`        - One-line area at the bottom of the screen.
-/// * `active_view` - Which panel currently owns focus (selects the hint set).
-/// * `palette`     - Active color palette.
-/// * `filter_active` - Whether the filter input bar is currently active.
-/// * `filter_text`   - Current filter query string.
+/// * `f`                      - Ratatui frame.
+/// * `area`                   - One-line area at the bottom of the screen.
+/// * `active_view`            - Which panel currently owns focus (selects the hint set).
+/// * `palette`                - Active color palette.
+/// * `filter_active`          - Whether the filter input bar is currently active.
+/// * `filter_text`            - Current filter query string.
+/// * `terminal_jump_enabled`  - Whether a known terminal is detected (for showing
+///   the `Tab jump to terminal` hint in the detail view).
 pub fn render_footer(
     f: &mut Frame,
     area: Rect,
@@ -32,6 +33,7 @@ pub fn render_footer(
     palette: &Palette,
     filter_active: bool,
     filter_text: &str,
+    terminal_jump_enabled: bool,
 ) {
     // Show the filter bar whenever the filter is active or has text.
     if filter_active || !filter_text.is_empty() {
@@ -39,13 +41,10 @@ pub fn render_footer(
         return;
     }
 
-    render_key_hints(f, area, active_view, palette);
+    render_key_hints(f, area, active_view, palette, terminal_jump_enabled);
 }
 
 /// Render the search/filter bar: "/ {text}█".
-///
-/// The `█` block character acts as a terminal cursor indicator so the user
-/// knows the bar is accepting input.
 fn render_filter_bar(f: &mut Frame, area: Rect, palette: &Palette, filter_text: &str) {
     let prefix_style = Style::new().fg(palette.label).add_modifier(Modifier::BOLD);
     let text_style = Style::new().fg(palette.foreground);
@@ -54,7 +53,6 @@ fn render_filter_bar(f: &mut Frame, area: Rect, palette: &Palette, filter_text: 
     let spans = vec![
         Span::styled("/ ", prefix_style),
         Span::styled(filter_text, text_style),
-        // Block character mimics a cursor so users know where new chars appear.
         Span::styled("\u{2588}", cursor_style),
     ];
 
@@ -62,27 +60,45 @@ fn render_filter_bar(f: &mut Frame, area: Rect, palette: &Palette, filter_text: 
 }
 
 /// Render the normal context-sensitive key-binding hints.
-fn render_key_hints(f: &mut Frame, area: Rect, active_view: &ActiveView, palette: &Palette) {
+fn render_key_hints(
+    f: &mut Frame,
+    area: Rect,
+    active_view: &ActiveView,
+    palette: &Palette,
+    terminal_jump_enabled: bool,
+) {
+    let tree_hints: &[(&str, &str)] = &[
+        ("q", ": Quit"),
+        ("  ↑/↓", ": Navigate"),
+        ("  Enter", ": Details"),
+        ("  Space", ": Expand"),
+        ("  Tab", ": Sort"),
+        ("  s", ": Dir"),
+        ("  T", ": Agent View"),
+        ("  g", ": Group"),
+        ("  x", ": Kill"),
+        ("  c", ": Config"),
+        ("  /", ": Filter"),
+        ("  F", ": Lens"),
+        ("  ?", ": Help"),
+    ];
+
+    let mut detail_hints: Vec<(&str, &str)> = vec![
+        ("Esc", ": Back"),
+        ("  q", ": Quit"),
+        ("  T", ": Agent View"),
+        ("  x", ": Kill"),
+        ("  c", ": Config"),
+        ("  ?", ": Help"),
+    ];
+
+    if terminal_jump_enabled {
+        detail_hints.push(("  Tab", ": Jump to terminal"));
+    }
+
     let hints: &[(&str, &str)] = match active_view {
-        ActiveView::Tree => &[
-            ("q", ": Quit"),
-            ("  ↑/↓", ": Navigate"),
-            ("  Enter", ": Details"),
-            ("  Space", ": Expand"),
-            ("  Tab", ": Sort"),
-            ("  s", ": Dir"),
-            ("  t", ": Agent View"),
-            ("  x", ": Kill"),
-            ("  c", ": Config"),
-            ("  /", ": Filter"),
-        ],
-        ActiveView::Detail => &[
-            ("Esc", ": Back"),
-            ("  q", ": Quit"),
-            ("  t", ": Agent View"),
-            ("  x", ": Kill"),
-            ("  c", ": Config"),
-        ],
+        ActiveView::Tree => tree_hints,
+        ActiveView::Detail => &detail_hints,
     };
 
     let key_style = Style::new().fg(palette.label).add_modifier(Modifier::BOLD);

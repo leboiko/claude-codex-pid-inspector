@@ -232,6 +232,7 @@ mod tests {
             subtree_stats: Default::default(),
             activity: None,
             activity_since: None,
+            row_kind: Default::default(),
         };
         let cell = build_name_cell(&entry, 20);
         assert!(

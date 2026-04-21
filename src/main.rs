@@ -13,7 +13,9 @@ use agentop::event::{Event, EventHandler};
 use agentop::output::{
     build_snapshot_with_telemetry, print_table, to_compact_json, to_pretty_json,
 };
-use agentop::process::{build_forest, display_name, ProcessInfo, ProcessScanner, SystemStats};
+use agentop::process::{
+    build_forest, display_name, FlatEntryKind, ProcessInfo, ProcessScanner, SystemStats,
+};
 use agentop::telemetry::claude::discovery::SessionIndex;
 use agentop::telemetry::codex::discovery::CodexHomeResolver;
 use agentop::telemetry::{
@@ -208,14 +210,35 @@ async fn run_tui(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     loop {
         match event_handler.next().await? {
             Event::Key(key) => {
+                let was_help_open = app.help_open;
                 let ctx = KeyContext {
                     active_view: &app.active_view,
                     confirming_kill: app.confirm_kill_pid.is_some(),
                     config_open: app.config_popup.is_some(),
                     filter_active: app.filter_active,
+                    help_open: app.help_open,
                 };
                 if let Some(action) = App::map_key_to_action(key, &ctx) {
                     app.handle_action(action);
+                    // When the help overlay was open and is now closed by a
+                    // non-Esc key, re-dispatch the same key so the intended
+                    // action executes (spec: "any other bound key closes AND
+                    // executes the action").
+                    if was_help_open && !app.help_open {
+                        let ctx2 = KeyContext {
+                            active_view: &app.active_view,
+                            confirming_kill: app.confirm_kill_pid.is_some(),
+                            config_open: app.config_popup.is_some(),
+                            filter_active: app.filter_active,
+                            help_open: false,
+                        };
+                        if let Some(action2) = App::map_key_to_action(key, &ctx2) {
+                            // Skip re-toggling help to avoid re-opening it.
+                            if !matches!(action2, agentop::action::Action::ToggleHelp) {
+                                app.handle_action(action2);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -328,6 +351,9 @@ fn scanner_task(
 /// * `f`   - Ratatui frame for this render cycle.
 /// * `app` - Mutable application state (table selection state needs `&mut`).
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
+    // Expire any transient status message that has timed out.
+    app.tick_status_message();
+
     let [status_area, main_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -342,7 +368,23 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // instead of leaving the terminal's default dark color showing through.
     f.render_widget(Block::default().style(palette.base_style()), f.area());
 
-    ui::render_status_bar(f, status_area, &app.system_stats, &app.agent_summary);
+    let visible_count = app.visible_process_count();
+    let total_count = app.total_process_count();
+    let status_msg = app.status_message.as_ref().map(|(s, _)| s.as_str());
+    ui::render_status_bar(
+        f,
+        status_area,
+        &app.system_stats,
+        &app.agent_summary,
+        app.focus_filter,
+        &app.filter_text,
+        visible_count,
+        total_count,
+        status_msg,
+    );
+
+    // Detect terminal adapter once per frame for footer hint.
+    let terminal_jump_enabled = agentop::terminals::detect_from_env().is_some();
 
     match app.active_view {
         ActiveView::Tree => {
@@ -398,18 +440,20 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         palette,
         app.filter_active,
         &app.filter_text,
+        terminal_jump_enabled,
     );
 
-    // Popups render on top of everything else. Config popup takes precedence
-    // over the kill popups, though in practice they can't be open at the same
-    // time because the key router swallows input when either is active.
-    if let Some(ref config_state) = app.config_popup {
+    // Popups render on top of everything else. Help overlay goes on top of all other
+    // popups. Config popup takes precedence over kill popups.
+    if app.help_open {
+        ui::render_help_overlay(f, palette);
+    } else if let Some(ref config_state) = app.config_popup {
         ui::render_config_popup(f, config_state, app.graph_style, app.theme, palette);
     } else if let Some(pid) = app.confirm_kill_pid {
         let name = app
             .flat_list
             .iter()
-            .find(|e| e.info.pid == pid)
+            .find(|e| matches!(e.row_kind, FlatEntryKind::Process) && e.info.pid == pid)
             .map(|e| display_name(&e.info))
             .unwrap_or("unknown");
         ui::render_kill_confirm(f, pid, name, palette);

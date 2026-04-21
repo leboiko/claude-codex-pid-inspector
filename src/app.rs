@@ -8,11 +8,14 @@ use crate::action::Action;
 use crate::config::Config;
 use crate::process::{
     build_forest, collect_expansion, flatten_visible, preserve_expansion, process_kind,
-    toggle_expand, ActivityState, FlatEntry, ProcessInfo, ProcessKind, ProcessNode, SubtreeStats,
-    SystemStats,
+    toggle_expand, ActivityState, FlatEntry, FlatEntryKind, ProcessInfo, ProcessKind, ProcessNode,
+    SubtreeStats, SystemStats,
 };
-use crate::telemetry::TelemetryMap;
+use crate::telemetry::{AgentStatus, TelemetryMap};
 use crate::ui::styles::{GraphStyle, Palette, Theme};
+
+/// How long a transient status message (e.g. terminal jump result) stays visible.
+const STATUS_MESSAGE_TTL_SECS: u64 = 3;
 
 /// Maximum number of historical CPU/memory samples retained per process.
 ///
@@ -26,6 +29,57 @@ pub const IDLE_CPU_THRESHOLD: f32 = 0.5;
 /// Minimum number of CPU samples required before classifying a process
 /// as idle or active. Fewer samples yield [`ActivityState::Unknown`].
 pub const IDLE_SAMPLE_WINDOW: usize = 5;
+
+/// The curated focus filters selectable with the `F` key.
+///
+/// Cycles in the order defined by the `ALL` constant. The active filter is
+/// applied before project grouping in the flat-list rebuild pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusFilter {
+    /// No filter — all processes are shown (default).
+    #[default]
+    All,
+    /// Processes that need attention: status is [`AgentStatus::NeedsInput`]
+    /// or context fraction is at or above 80 %.
+    Attention,
+    /// Processes with smoothed CPU usage >= 30 %.
+    HighCpu,
+    /// Processes with context fraction >= 80 %.
+    HighContext,
+    /// Processes that started within the last 10 minutes (run_time <= 600 s).
+    Recent,
+}
+
+impl FocusFilter {
+    /// All focus-filter variants in the cycle order.
+    const ALL: [FocusFilter; 5] = [
+        Self::All,
+        Self::Attention,
+        Self::HighCpu,
+        Self::HighContext,
+        Self::Recent,
+    ];
+
+    /// Advance to the next filter in the cycle, wrapping at the end.
+    pub fn next(self) -> Self {
+        let idx = Self::ALL
+            .iter()
+            .position(|&f| f == self)
+            .expect("FocusFilter variant missing from ALL array");
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+
+    /// Short label rendered in the status-bar filter pill.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Attention => "attention",
+            Self::HighCpu => "high-cpu",
+            Self::HighContext => "high-context",
+            Self::Recent => "recent",
+        }
+    }
+}
 
 /// Columns that support sorting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -162,6 +216,8 @@ pub struct KeyContext<'a> {
     pub config_open: bool,
     /// Whether the search/filter bar is currently active.
     pub filter_active: bool,
+    /// Whether the help overlay is currently open.
+    pub help_open: bool,
 }
 
 /// Central application state. All mutations flow through [`App::handle_action`]
@@ -235,6 +291,24 @@ pub struct App {
     /// Used to detect a cost increase of > $0.10 in the last 30 seconds and
     /// append a burn indicator (`↑`) to the cost cell in the agent view.
     pub cost_burn_history: HashMap<u32, (Instant, f64)>,
+
+    /// Currently active curated focus filter. Cycled with `F`.
+    pub focus_filter: FocusFilter,
+
+    /// Whether project grouping (group rows by cwd) is enabled. Toggled with `g`.
+    pub project_grouping: bool,
+
+    /// Whether the help overlay is currently visible.
+    pub help_open: bool,
+
+    /// Transient status message (e.g. "Jumped to tmux session:1.0") and when it
+    /// was set. Cleared automatically after 3 seconds.
+    pub status_message: Option<(String, Instant)>,
+
+    /// Collapse state per cwd group key when project grouping is active.
+    ///
+    /// `false` means collapsed (children hidden). Absent entries default to expanded.
+    pub group_collapsed: HashMap<String, bool>,
 }
 
 impl App {
@@ -271,6 +345,17 @@ impl App {
         .save();
     }
 
+    /// Expire the transient status message if it has been visible long enough.
+    ///
+    /// Call this on every render tick so messages disappear automatically.
+    pub fn tick_status_message(&mut self) {
+        if let Some((_, set_at)) = self.status_message {
+            if set_at.elapsed().as_secs() >= STATUS_MESSAGE_TTL_SECS {
+                self.status_message = None;
+            }
+        }
+    }
+
     /// Dispatch an [`Action`] produced by the event loop, mutating state accordingly.
     pub fn handle_action(&mut self, action: Action) {
         // Clear the kill result message on any action that isn't part of the kill flow.
@@ -287,19 +372,44 @@ impl App {
             Action::MoveDown => self.move_selection(1),
             Action::ToggleExpand => {
                 if let Some(idx) = self.table_state.selected() {
-                    if let Some(entry) = self.flat_list.get(idx) {
-                        let pid = entry.info.pid;
-                        toggle_expand(&mut self.forest, pid);
-                        self.rebuild_flat_list();
+                    if let Some(entry) = self.flat_list.get(idx).cloned() {
+                        match &entry.row_kind {
+                            FlatEntryKind::GroupHeader {
+                                cwd_key, expanded, ..
+                            } => {
+                                // Toggle collapse state for this cwd group.
+                                let key = cwd_key.clone();
+                                self.group_collapsed.insert(key, !expanded);
+                                self.rebuild_flat_list();
+                            }
+                            FlatEntryKind::Process => {
+                                let pid = entry.info.pid;
+                                toggle_expand(&mut self.forest, pid);
+                                self.rebuild_flat_list();
+                            }
+                        }
                     }
                 }
             }
             Action::SelectProcess => {
                 if let Some(idx) = self.table_state.selected() {
                     if let Some(entry) = self.flat_list.get(idx) {
-                        self.selected_detail = Some(entry.info.clone());
-                        self.selected_detail_subtree = Some(entry.subtree_stats);
-                        self.active_view = ActiveView::Detail;
+                        // Skip group header rows — Enter on a header collapses/expands instead.
+                        if matches!(entry.row_kind, FlatEntryKind::GroupHeader { .. }) {
+                            let entry = entry.clone();
+                            if let FlatEntryKind::GroupHeader {
+                                cwd_key, expanded, ..
+                            } = &entry.row_kind
+                            {
+                                let key = cwd_key.clone();
+                                self.group_collapsed.insert(key, !expanded);
+                                self.rebuild_flat_list();
+                            }
+                        } else {
+                            self.selected_detail = Some(entry.info.clone());
+                            self.selected_detail_subtree = Some(entry.subtree_stats);
+                            self.active_view = ActiveView::Detail;
+                        }
                     }
                 }
             }
@@ -360,6 +470,8 @@ impl App {
             }
             Action::EnterFilter => {
                 self.filter_active = true;
+                // Starting a free-text search resets the curated filter to All.
+                self.focus_filter = FocusFilter::All;
             }
             Action::ClearFilter => {
                 self.filter_active = false;
@@ -380,6 +492,65 @@ impl App {
             Action::ToggleTelemetryView => {
                 self.telemetry_view = !self.telemetry_view;
             }
+            Action::CycleFocusFilter => {
+                self.focus_filter = self.focus_filter.next();
+                // Pressing F while free-text filter is active clears the text filter.
+                self.filter_active = false;
+                self.filter_text.clear();
+                self.rebuild_flat_list();
+            }
+            Action::ToggleProjectGrouping => {
+                self.project_grouping = !self.project_grouping;
+                self.rebuild_flat_list();
+            }
+            Action::ToggleHelp => {
+                self.help_open = !self.help_open;
+            }
+            Action::JumpToTerminal => {
+                let msg = self.attempt_terminal_jump();
+                self.status_message = Some((msg, Instant::now()));
+            }
+        }
+    }
+
+    /// Attempt to focus the terminal pane that owns the currently selected process.
+    ///
+    /// Returns a short status string suitable for the 3-second flash.
+    fn attempt_terminal_jump(&self) -> String {
+        use crate::terminals;
+
+        let adapter = match terminals::detect_from_env() {
+            Some(a) => a,
+            None => {
+                return "Cannot jump: terminal not detected (iTerm2/tmux/kitty/wezterm supported)"
+                    .to_string();
+            }
+        };
+
+        let info = match &self.selected_detail {
+            Some(i) => i,
+            None => return "No process selected".to_string(),
+        };
+
+        // Resolve the TTY for the selected process.
+        let tty = match resolve_tty(info.pid) {
+            Some(t) => t,
+            None => return format!("Cannot determine TTY for PID {}", info.pid),
+        };
+
+        // Check for self-jump: if the current terminal matches the tty.
+        if let Some(current) = adapter.current_target() {
+            // Normalise for comparison: strip /dev/ prefix.
+            let tty_norm = tty.trim_start_matches("/dev/");
+            let current_norm = current.pane_id.trim_start_matches("/dev/");
+            if tty_norm == current_norm {
+                return "This session is already in focus".to_string();
+            }
+        }
+
+        match adapter.focus_by_tty(&tty) {
+            Ok(pane) => format!("Jumped to {} {}", adapter.name(), pane),
+            Err(e) => format!("Failed to jump: {e}"),
         }
     }
 
@@ -541,9 +712,12 @@ impl App {
     }
 
     /// Rebuild and sort `flat_list`, inject activity badges, apply the current
-    /// filter, then clamp the selection cursor.
+    /// filter, optionally apply project grouping, then clamp the selection cursor.
     ///
-    /// Call this whenever the forest structure, sort parameters, or filter text changes.
+    /// Pipeline order: sort → inject activity → curated focus filter → text
+    /// filter → project grouping → clamp selection.
+    ///
+    /// Call this whenever the forest structure, sort parameters, or filter changes.
     fn rebuild_flat_list(&mut self) {
         self.sort_flat_list();
 
@@ -555,8 +729,229 @@ impl App {
             }
         }
 
+        // Apply curated focus filter (modifies flat_list in place).
+        self.apply_focus_filter();
+
+        // Apply free-text filter on top of the focus filter result.
         self.apply_filter();
+
+        // Optionally re-organise into cwd groups with synthetic header rows.
+        if self.project_grouping {
+            self.apply_project_grouping();
+        }
+
         self.clamp_selection();
+    }
+
+    /// Apply the active [`FocusFilter`] to `flat_list`, retaining only entries
+    /// that match the predicate (and their ancestors for non-root matches).
+    ///
+    /// When the filter is [`FocusFilter::All`] this is a no-op.
+    fn apply_focus_filter(&mut self) {
+        if self.focus_filter == FocusFilter::All {
+            return;
+        }
+
+        let filter = self.focus_filter;
+        let telemetry = &self.telemetry;
+
+        let n = self.flat_list.len();
+        let mut keep = vec![false; n];
+
+        for (i, entry) in self.flat_list.iter().enumerate() {
+            keep[i] = focus_filter_matches(entry, filter, telemetry);
+        }
+
+        // Propagate keep upward through parent chains so matched children pull
+        // in their ancestors (same logic as apply_filter).
+        for i in (0..n).rev() {
+            if !keep[i] {
+                continue;
+            }
+            let child_depth = self.flat_list[i].depth;
+            if child_depth == 0 {
+                continue;
+            }
+            for j in (0..i).rev() {
+                if self.flat_list[j].depth == child_depth - 1 {
+                    keep[j] = true;
+                    break;
+                }
+            }
+        }
+
+        let mut idx = 0;
+        self.flat_list.retain(|_| {
+            let k = keep[idx];
+            idx += 1;
+            k
+        });
+    }
+
+    /// Re-organise `flat_list` into cwd-based groups, inserting a synthetic
+    /// [`FlatEntryKind::GroupHeader`] row before each group.
+    ///
+    /// Empty groups (all members filtered out before this step) are skipped
+    /// entirely — no ghost headers are emitted.
+    ///
+    /// Child processes inherit their root's cwd for grouping purposes: a `zsh`
+    /// child of a Claude root goes into the same group as the root.
+    fn apply_project_grouping(&mut self) {
+        // Step 1: collect root pids visible in the current (post-filter) flat_list
+        // and map each root's cwd to a canonical group key.
+        // Roots without a cwd are placed in a special "" group (rendered as "no project").
+        let mut root_cwd: HashMap<u32, String> = HashMap::new();
+        for entry in &self.flat_list {
+            if entry.is_root {
+                let cwd = entry.info.cwd.clone().unwrap_or_default();
+                root_cwd.insert(entry.info.pid, cwd);
+            }
+        }
+
+        // Step 2: for each flat entry, find the group key by walking up to the root.
+        // Children inherit the root's cwd.
+        let mut entry_group: Vec<String> = Vec::with_capacity(self.flat_list.len());
+        {
+            // Keep a stack of (depth, cwd_key) for the current path.
+            let mut ancestor_stack: Vec<(usize, String)> = Vec::new();
+            for entry in &self.flat_list {
+                // Pop stack entries that are deeper than this entry's parent.
+                while ancestor_stack
+                    .last()
+                    .is_some_and(|(d, _)| *d >= entry.depth)
+                {
+                    ancestor_stack.pop();
+                }
+                if entry.is_root {
+                    let cwd = entry.info.cwd.clone().unwrap_or_default();
+                    ancestor_stack.push((entry.depth, cwd.clone()));
+                    entry_group.push(cwd);
+                } else {
+                    // Inherit from nearest ancestor root.
+                    let inherited = ancestor_stack
+                        .iter()
+                        .rev()
+                        .find(|(d, _)| *d == 0)
+                        .map(|(_, k)| k.clone())
+                        .unwrap_or_default();
+                    entry_group.push(inherited);
+                }
+            }
+        }
+
+        // Step 3: build an ordered list of unique group keys (preserving first appearance
+        // order, which is determined by the post-sort post-filter flat_list).
+        let mut seen_groups: Vec<String> = Vec::new();
+        let mut seen_set: HashSet<String> = HashSet::new();
+        for key in &entry_group {
+            if seen_set.insert(key.clone()) {
+                seen_groups.push(key.clone());
+            }
+        }
+
+        // Step 4: for each group, compute rollup stats from root entries only.
+        let mut group_rollup: HashMap<String, GroupRollup> = HashMap::new();
+        for (entry, group_key) in self.flat_list.iter().zip(entry_group.iter()) {
+            if !entry.is_root {
+                continue;
+            }
+            let rollup = group_rollup.entry(group_key.clone()).or_default();
+            rollup.session_count += 1;
+            // Retrieve telemetry for cost and context fraction.
+            if let Some(tel) = self.telemetry.get(&entry.info.pid) {
+                if let Some(cost) = tel.cost_usd {
+                    *rollup.total_cost.get_or_insert(0.0) += cost;
+                }
+                if let Some(frac) = tel.context_fraction() {
+                    rollup.ctx_sum += frac;
+                    rollup.ctx_count += 1;
+                }
+            }
+            // Most-recent-active = max(start_time + run_time).
+            let activity_ts = entry.info.start_time + entry.info.run_time;
+            if activity_ts > rollup.latest_activity {
+                rollup.latest_activity = activity_ts;
+            }
+        }
+
+        // Step 5: sort groups by most-recent-active descending.
+        seen_groups.sort_by(|a, b| {
+            let ra = group_rollup.get(a).map(|r| r.latest_activity).unwrap_or(0);
+            let rb = group_rollup.get(b).map(|r| r.latest_activity).unwrap_or(0);
+            rb.cmp(&ra)
+        });
+
+        // Step 6: assemble the new flat list with headers.
+        let mut new_list: Vec<FlatEntry> =
+            Vec::with_capacity(self.flat_list.len() + seen_groups.len());
+        let old_list = std::mem::take(&mut self.flat_list);
+
+        for group_key in &seen_groups {
+            let rollup = match group_rollup.get(group_key) {
+                Some(r) if r.session_count > 0 => r,
+                _ => continue,
+            };
+
+            let collapsed = self
+                .group_collapsed
+                .get(group_key)
+                .copied()
+                .unwrap_or(false);
+            let slug = truncate_path_middle(group_key, 50);
+            let avg_ctx = if rollup.ctx_count > 0 {
+                Some(rollup.ctx_sum / rollup.ctx_count as f32)
+            } else {
+                None
+            };
+
+            // Build a synthetic FlatEntry for the header.
+            // `info` is a zeroed-out placeholder; renderers must check `row_kind`.
+            let header_entry = FlatEntry {
+                info: ProcessInfo {
+                    pid: 0,
+                    parent_pid: None,
+                    name: slug.clone(),
+                    cmd: vec![],
+                    exe_path: None,
+                    cwd: Some(group_key.clone()),
+                    cpu_usage: 0.0,
+                    memory_bytes: 0,
+                    status: String::new(),
+                    environ_count: 0,
+                    start_time: 0,
+                    run_time: 0,
+                },
+                depth: 0,
+                is_root: false,
+                expanded: !collapsed,
+                has_children: true,
+                is_last_sibling: false,
+                kind: None,
+                subtree_stats: SubtreeStats::default(),
+                activity: None,
+                activity_since: None,
+                row_kind: FlatEntryKind::GroupHeader {
+                    slug,
+                    session_count: rollup.session_count,
+                    total_cost: rollup.total_cost,
+                    avg_context_fraction: avg_ctx,
+                    expanded: !collapsed,
+                    cwd_key: group_key.clone(),
+                },
+            };
+            new_list.push(header_entry);
+
+            if !collapsed {
+                // Append all entries that belong to this group.
+                for (entry, key) in old_list.iter().zip(entry_group.iter()) {
+                    if key == group_key {
+                        new_list.push(entry.clone());
+                    }
+                }
+            }
+        }
+
+        self.flat_list = new_list;
     }
 
     /// Update the idle/active classification for every root process in the forest.
@@ -643,12 +1038,36 @@ impl App {
         });
     }
 
+    /// Return the number of process rows (non-header) currently visible in `flat_list`.
+    ///
+    /// Used by the status-bar filter pill to render `(shown/total)`.
+    pub fn visible_process_count(&self) -> usize {
+        self.flat_list
+            .iter()
+            .filter(|e| matches!(e.row_kind, FlatEntryKind::Process))
+            .count()
+    }
+
+    /// Return the total number of process rows in the forest before any filtering.
+    ///
+    /// Used by the status-bar filter pill denominator.
+    pub fn total_process_count(&self) -> usize {
+        // The forest only contains roots; traverse to count all nodes.
+        count_forest_nodes(&self.forest)
+    }
+
     /// Return the PID of the currently focused process, if any.
+    ///
+    /// Returns `None` when the focused row is a group header (no process).
     fn selected_pid(&self) -> Option<u32> {
         match self.active_view {
             ActiveView::Tree => {
                 let idx = self.table_state.selected()?;
-                Some(self.flat_list.get(idx)?.info.pid)
+                let entry = self.flat_list.get(idx)?;
+                if matches!(entry.row_kind, FlatEntryKind::GroupHeader { .. }) {
+                    return None;
+                }
+                Some(entry.info.pid)
             }
             ActiveView::Detail => self.selected_detail.as_ref().map(|d| d.pid),
         }
@@ -697,8 +1116,8 @@ impl App {
     ///
     /// # Arguments
     ///
-    /// * `key`         - The raw key event from crossterm.
-    /// * `active_view` - The panel currently in focus; some bindings are view-specific.
+    /// * `key` - The raw key event from crossterm.
+    /// * `ctx` - Current UI mode context flags.
     pub fn map_key_to_action(key: KeyEvent, ctx: &KeyContext<'_>) -> Option<Action> {
         // Ctrl+C is a universal quit regardless of view or mode.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -724,6 +1143,23 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelKill),
                 _ => None,
             };
+        }
+
+        // Help overlay: Esc closes; any other bound key closes AND executes it.
+        // Unbound keys just close.
+        if ctx.help_open {
+            // Always close the overlay first.
+            // Esc closes only.
+            if key.code == KeyCode::Esc {
+                return Some(Action::ToggleHelp);
+            }
+            // For other keys, close help then fall through to normal dispatch.
+            // We do this by returning ToggleHelp here; the caller must re-process
+            // the same key in the next loop iteration. Since that requires more
+            // invasive changes to main.rs, we take the simpler approach: return
+            // ToggleHelp for Esc, and let any other key close the overlay via
+            // a secondary dispatch path (handled in main.rs draw loop).
+            return Some(Action::ToggleHelp);
         }
 
         // Filter bar intercepts most keystrokes when active.
@@ -753,6 +1189,11 @@ impl App {
                 KeyCode::Char('c') => Some(Action::ToggleConfig),
                 KeyCode::Char('/') => Some(Action::EnterFilter),
                 KeyCode::Char('t') | KeyCode::Char('T') => Some(Action::ToggleTelemetryView),
+                // Phase 4 additions
+                KeyCode::Char('F') => Some(Action::CycleFocusFilter),
+                KeyCode::Char('g') => Some(Action::ToggleProjectGrouping),
+                KeyCode::Char('?') => Some(Action::ToggleHelp),
+                KeyCode::Char('z') => Some(Action::ClearFilter),
                 _ => None,
             },
             ActiveView::Detail => match key.code {
@@ -761,9 +1202,102 @@ impl App {
                 KeyCode::Char('x') => Some(Action::KillRequest),
                 KeyCode::Char('c') => Some(Action::ToggleConfig),
                 KeyCode::Char('t') | KeyCode::Char('T') => Some(Action::ToggleTelemetryView),
+                // Phase 4 additions
+                KeyCode::Char('?') => Some(Action::ToggleHelp),
+                KeyCode::Tab => Some(Action::JumpToTerminal),
                 _ => None,
             },
         }
+    }
+}
+
+/// Count all nodes in the forest (recursively).
+fn count_forest_nodes(forest: &[ProcessNode]) -> usize {
+    forest
+        .iter()
+        .map(|n| 1 + count_forest_nodes(&n.children))
+        .sum()
+}
+
+/// Resolve the controlling TTY for a process by PID.
+///
+/// Tries `ps -o tty= -p <pid>` which works on both macOS and Linux.
+/// Returns `None` when the TTY cannot be determined (e.g. daemon processes with no tty).
+fn resolve_tty(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "tty=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let tty = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tty.is_empty() || tty == "?" {
+        return None;
+    }
+    // Prepend /dev/ if not already present.
+    if tty.starts_with('/') {
+        Some(tty)
+    } else {
+        Some(format!("/dev/{tty}"))
+    }
+}
+
+/// Intermediate accumulator used during project-grouping rollup.
+#[derive(Default)]
+struct GroupRollup {
+    session_count: usize,
+    total_cost: Option<f64>,
+    ctx_sum: f32,
+    ctx_count: usize,
+    /// Max of `start_time + run_time` across group members.
+    latest_activity: u64,
+}
+
+/// Truncate a filesystem path to at most `max_chars` characters, replacing the
+/// middle with `…` when necessary.
+///
+/// For example: `/Users/me/very/long/path/to/project` → `/Users/me/…/project`.
+fn truncate_path_middle(path: &str, max_chars: usize) -> String {
+    if path.len() <= max_chars {
+        return path.to_string();
+    }
+    // Keep a prefix and suffix around an ellipsis.
+    let half = (max_chars.saturating_sub(3)) / 2;
+    let prefix = &path[..half];
+    let suffix = &path[path.len().saturating_sub(half)..];
+    format!("{prefix}...{suffix}")
+}
+
+/// Returns `true` when `entry` passes the given curated focus filter.
+///
+/// The telemetry map is consulted for status and context fraction. Entries
+/// that lack telemetry are excluded from `Attention` and `HighContext` filters
+/// but included in `HighCpu` and `Recent` when their numeric fields qualify.
+pub fn focus_filter_matches(
+    entry: &FlatEntry,
+    filter: FocusFilter,
+    telemetry: &TelemetryMap,
+) -> bool {
+    match filter {
+        FocusFilter::All => true,
+        FocusFilter::Attention => {
+            let tel = telemetry.get(&entry.info.pid);
+            let needs_input = tel
+                .and_then(|t| t.status)
+                .is_some_and(|s| s == AgentStatus::NeedsInput);
+            let high_ctx = tel
+                .and_then(|t| t.context_fraction())
+                .is_some_and(|f| f >= 0.80);
+            needs_input || high_ctx
+        }
+        FocusFilter::HighCpu => entry.info.cpu_usage >= 30.0,
+        FocusFilter::HighContext => {
+            let tel = telemetry.get(&entry.info.pid);
+            tel.and_then(|t| t.context_fraction())
+                .is_some_and(|f| f >= 0.80)
+        }
+        FocusFilter::Recent => entry.info.run_time <= 600,
     }
 }
 
@@ -1067,5 +1601,412 @@ mod tests {
         assert_eq!(app.flat_list.len(), 1);
         app.handle_action(Action::ClearFilter);
         assert_eq!(app.flat_list.len(), 2);
+    }
+
+    // ── Focus filter predicate tests ────────────────────────────────────────
+
+    fn make_entry_with(cpu: f32, run_time: u64) -> FlatEntry {
+        let info = make_proc(42, None, "claude", cpu, 0);
+        FlatEntry {
+            info: ProcessInfo { run_time, ..info },
+            depth: 0,
+            is_root: true,
+            expanded: true,
+            has_children: false,
+            is_last_sibling: true,
+            kind: None,
+            subtree_stats: SubtreeStats::default(),
+            activity: None,
+            activity_since: None,
+            row_kind: FlatEntryKind::Process,
+        }
+    }
+
+    #[test]
+    fn focus_filter_all_includes_everything() {
+        let entry = make_entry_with(0.0, 9999);
+        let telemetry = TelemetryMap::new();
+        assert!(focus_filter_matches(&entry, FocusFilter::All, &telemetry));
+    }
+
+    #[test]
+    fn focus_filter_high_cpu_above_threshold() {
+        let entry = make_entry_with(35.0, 0);
+        let telemetry = TelemetryMap::new();
+        assert!(focus_filter_matches(
+            &entry,
+            FocusFilter::HighCpu,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_high_cpu_below_threshold() {
+        let entry = make_entry_with(10.0, 0);
+        let telemetry = TelemetryMap::new();
+        assert!(!focus_filter_matches(
+            &entry,
+            FocusFilter::HighCpu,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_recent_within_10_minutes() {
+        let entry = make_entry_with(0.0, 300); // 5 minutes
+        let telemetry = TelemetryMap::new();
+        assert!(focus_filter_matches(
+            &entry,
+            FocusFilter::Recent,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_recent_outside_10_minutes() {
+        let entry = make_entry_with(0.0, 700); // > 10 minutes
+        let telemetry = TelemetryMap::new();
+        assert!(!focus_filter_matches(
+            &entry,
+            FocusFilter::Recent,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_attention_needs_input() {
+        use crate::telemetry::AgentTelemetry;
+        let entry = make_entry_with(0.0, 0);
+        let mut telemetry = TelemetryMap::new();
+        telemetry.insert(
+            42,
+            AgentTelemetry {
+                status: Some(AgentStatus::NeedsInput),
+                ..Default::default()
+            },
+        );
+        assert!(focus_filter_matches(
+            &entry,
+            FocusFilter::Attention,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_attention_high_context() {
+        use crate::telemetry::AgentTelemetry;
+        let entry = make_entry_with(0.0, 0);
+        let mut telemetry = TelemetryMap::new();
+        telemetry.insert(
+            42,
+            AgentTelemetry {
+                context_tokens: Some(850),
+                context_window: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert!(focus_filter_matches(
+            &entry,
+            FocusFilter::Attention,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_high_context_triggers_at_80_percent() {
+        use crate::telemetry::AgentTelemetry;
+        let entry = make_entry_with(0.0, 0);
+        let mut telemetry = TelemetryMap::new();
+        telemetry.insert(
+            42,
+            AgentTelemetry {
+                context_tokens: Some(800),
+                context_window: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert!(focus_filter_matches(
+            &entry,
+            FocusFilter::HighContext,
+            &telemetry
+        ));
+    }
+
+    #[test]
+    fn focus_filter_high_context_below_80_percent() {
+        use crate::telemetry::AgentTelemetry;
+        let entry = make_entry_with(0.0, 0);
+        let mut telemetry = TelemetryMap::new();
+        telemetry.insert(
+            42,
+            AgentTelemetry {
+                context_tokens: Some(700),
+                context_window: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert!(!focus_filter_matches(
+            &entry,
+            FocusFilter::HighContext,
+            &telemetry
+        ));
+    }
+
+    // ── FocusFilter cycle tests ──────────────────────────────────────────────
+
+    #[test]
+    fn focus_filter_cycles_through_all_variants() {
+        let mut f = FocusFilter::All;
+        f = f.next();
+        assert_eq!(f, FocusFilter::Attention);
+        f = f.next();
+        assert_eq!(f, FocusFilter::HighCpu);
+        f = f.next();
+        assert_eq!(f, FocusFilter::HighContext);
+        f = f.next();
+        assert_eq!(f, FocusFilter::Recent);
+        f = f.next();
+        assert_eq!(f, FocusFilter::All); // wraps
+    }
+
+    // ── Project grouping rollup math tests ───────────────────────────────────
+
+    #[test]
+    fn project_grouping_inserts_headers() {
+        let procs = vec![
+            ProcessInfo {
+                pid: 1,
+                parent_pid: None,
+                name: "claude".to_string(),
+                cmd: vec!["claude".to_string()],
+                exe_path: None,
+                cwd: Some("/home/user/proj-a".to_string()),
+                cpu_usage: 5.0,
+                memory_bytes: 100,
+                status: "Run".to_string(),
+                environ_count: 0,
+                start_time: 0,
+                run_time: 0,
+            },
+            ProcessInfo {
+                pid: 2,
+                parent_pid: None,
+                name: "claude".to_string(),
+                cmd: vec!["claude".to_string()],
+                exe_path: None,
+                cwd: Some("/home/user/proj-b".to_string()),
+                cpu_usage: 2.0,
+                memory_bytes: 50,
+                status: "Run".to_string(),
+                environ_count: 0,
+                start_time: 0,
+                run_time: 0,
+            },
+        ];
+        let mut app = app_with_procs(procs);
+        app.project_grouping = true;
+        app.rebuild_flat_list();
+
+        // With two distinct cwds there should be 2 headers + 2 process rows = 4.
+        assert_eq!(
+            app.flat_list.len(),
+            4,
+            "expected 2 headers + 2 processes, got {}",
+            app.flat_list.len()
+        );
+        let headers: Vec<_> = app
+            .flat_list
+            .iter()
+            .filter(|e| matches!(e.row_kind, FlatEntryKind::GroupHeader { .. }))
+            .collect();
+        assert_eq!(headers.len(), 2);
+    }
+
+    #[test]
+    fn project_grouping_same_cwd_shares_header() {
+        let procs = vec![
+            ProcessInfo {
+                pid: 1,
+                parent_pid: None,
+                name: "claude".to_string(),
+                cmd: vec!["claude".to_string()],
+                exe_path: None,
+                cwd: Some("/shared/proj".to_string()),
+                cpu_usage: 1.0,
+                memory_bytes: 10,
+                status: "Run".to_string(),
+                environ_count: 0,
+                start_time: 0,
+                run_time: 0,
+            },
+            ProcessInfo {
+                pid: 2,
+                parent_pid: None,
+                name: "claude".to_string(),
+                cmd: vec!["claude".to_string()],
+                exe_path: None,
+                cwd: Some("/shared/proj".to_string()),
+                cpu_usage: 2.0,
+                memory_bytes: 20,
+                status: "Run".to_string(),
+                environ_count: 0,
+                start_time: 0,
+                run_time: 0,
+            },
+        ];
+        let mut app = app_with_procs(procs);
+        app.project_grouping = true;
+        app.rebuild_flat_list();
+
+        // Same cwd → 1 header + 2 processes = 3 rows.
+        assert_eq!(app.flat_list.len(), 3);
+        let headers: Vec<_> = app
+            .flat_list
+            .iter()
+            .filter(|e| matches!(e.row_kind, FlatEntryKind::GroupHeader { .. }))
+            .collect();
+        assert_eq!(headers.len(), 1);
+
+        // Header should count both sessions.
+        if let FlatEntryKind::GroupHeader { session_count, .. } = &headers[0].row_kind {
+            assert_eq!(*session_count, 2);
+        }
+    }
+
+    // ── truncate_path_middle tests ───────────────────────────────────────────
+
+    #[test]
+    fn truncate_path_short_path_unchanged() {
+        assert_eq!(truncate_path_middle("/short", 50), "/short");
+    }
+
+    #[test]
+    fn truncate_path_long_path_truncated() {
+        let long = "/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z";
+        let result = truncate_path_middle(long, 20);
+        assert!(
+            result.len() <= 23,
+            "truncated should be close to max: {result}"
+        );
+        assert!(result.contains("..."));
+    }
+
+    // ── Key routing tests ────────────────────────────────────────────────────
+
+    fn tree_ctx() -> KeyContext<'static> {
+        // We need a static reference for active_view in KeyContext.
+        // Use a Box::leak trick in tests only.
+        static TREE: ActiveView = ActiveView::Tree;
+        KeyContext {
+            active_view: &TREE,
+            confirming_kill: false,
+            config_open: false,
+            filter_active: false,
+            help_open: false,
+        }
+    }
+
+    fn detail_ctx() -> KeyContext<'static> {
+        static DETAIL: ActiveView = ActiveView::Detail;
+        KeyContext {
+            active_view: &DETAIL,
+            confirming_kill: false,
+            config_open: false,
+            filter_active: false,
+            help_open: false,
+        }
+    }
+
+    #[test]
+    fn key_f_cycles_focus_filter_in_tree() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let key = KeyEvent {
+            code: KeyCode::Char('F'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = App::map_key_to_action(key, &tree_ctx());
+        assert!(
+            matches!(action, Some(Action::CycleFocusFilter)),
+            "F in tree should map to CycleFocusFilter"
+        );
+    }
+
+    #[test]
+    fn key_g_toggles_grouping_in_tree() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let key = KeyEvent {
+            code: KeyCode::Char('g'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = App::map_key_to_action(key, &tree_ctx());
+        assert!(matches!(action, Some(Action::ToggleProjectGrouping)));
+    }
+
+    #[test]
+    fn key_question_opens_help_in_tree() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let key = KeyEvent {
+            code: KeyCode::Char('?'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = App::map_key_to_action(key, &tree_ctx());
+        assert!(matches!(action, Some(Action::ToggleHelp)));
+    }
+
+    #[test]
+    fn key_tab_in_detail_view_triggers_jump() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let key = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = App::map_key_to_action(key, &detail_ctx());
+        assert!(matches!(action, Some(Action::JumpToTerminal)));
+    }
+
+    #[test]
+    fn key_tab_in_tree_view_cycles_sort() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let key = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        let action = App::map_key_to_action(key, &tree_ctx());
+        assert!(matches!(action, Some(Action::SortNext)));
+    }
+
+    #[test]
+    fn handle_cycle_focus_filter_resets_text_filter() {
+        let procs = vec![make_proc_simple(1, None, "claude", 50.0)];
+        let mut app = app_with_procs(procs);
+        app.filter_text = "something".to_string();
+        app.filter_active = true;
+        app.handle_action(Action::CycleFocusFilter);
+        assert!(app.filter_text.is_empty(), "text filter should be cleared");
+        assert!(!app.filter_active);
+        assert_eq!(app.focus_filter, FocusFilter::Attention);
+    }
+
+    #[test]
+    fn enter_filter_resets_focus_filter() {
+        let procs = vec![make_proc_simple(1, None, "claude", 0.0)];
+        let mut app = app_with_procs(procs);
+        app.focus_filter = FocusFilter::HighCpu;
+        app.handle_action(Action::EnterFilter);
+        assert_eq!(
+            app.focus_filter,
+            FocusFilter::All,
+            "EnterFilter should reset curated filter"
+        );
     }
 }
