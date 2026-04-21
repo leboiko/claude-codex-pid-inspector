@@ -70,9 +70,8 @@ pub struct RolloutAggregates {
     pub last_tool_call_name: Option<String>,
     /// Session ID from the `session_meta` line (first line only).
     pub session_id: Option<String>,
-    /// Ring buffer of the latest assistant messages, capped at
-    /// [`MAX_RECENT_MESSAGES`]. Used for the TUI detail view only; never
-    /// serialised to `--json`.
+    /// Ring buffer of the latest assistant messages, capped at five entries.
+    /// Used for the TUI detail view only; never serialised to `--json`.
     pub recent_messages: Vec<RecentMessage>,
 }
 
