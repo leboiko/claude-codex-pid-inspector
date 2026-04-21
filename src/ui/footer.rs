@@ -71,6 +71,7 @@ fn render_key_hints(f: &mut Frame, area: Rect, active_view: &ActiveView, palette
             ("  Space", ": Expand"),
             ("  Tab", ": Sort"),
             ("  s", ": Dir"),
+            ("  t", ": Agent View"),
             ("  x", ": Kill"),
             ("  c", ": Config"),
             ("  /", ": Filter"),
@@ -78,6 +79,7 @@ fn render_key_hints(f: &mut Frame, area: Rect, active_view: &ActiveView, palette
         ActiveView::Detail => &[
             ("Esc", ": Back"),
             ("  q", ": Quit"),
+            ("  t", ": Agent View"),
             ("  x", ": Kill"),
             ("  c", ": Config"),
         ],

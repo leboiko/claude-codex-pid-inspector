@@ -1,8 +1,9 @@
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     symbols::Marker,
     text::{Line, Span},
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Wrap},
@@ -12,6 +13,7 @@ use ratatui::{
 use crate::process::display_name;
 use crate::process::info::ProcessInfo;
 use crate::process::SubtreeStats;
+use crate::telemetry::AgentTelemetry;
 
 use super::format::{format_duration_full, format_memory};
 use super::styles::{GraphStyle, Palette};
@@ -192,8 +194,16 @@ fn render_info_table(
 
 /// Render the full detail view for a selected process.
 ///
-/// The area is split vertically into five sections:
-/// header, info table, CPU sparkline, memory sparkline, and command.
+/// When `telemetry` is `Some` and `has_data()` is true, extra Claude-specific
+/// sections are appended below the command block:
+/// - Token statistics
+/// - Health / decay score bar
+/// - Pending tool indicator
+/// - Recent messages (last 5 assistant turns)
+/// - Subagent count summary
+///
+/// Non-Claude processes (Codex roots, plain children) receive the original
+/// layout unchanged.
 ///
 /// # Arguments
 ///
@@ -206,6 +216,7 @@ fn render_info_table(
 ///   `Some`, three extra rows appear in the info table.
 /// * `graph_style`    - Dot vs bar chart style.
 /// * `palette`        - Active color theme.
+/// * `telemetry`      - Optional Claude session telemetry; `None` for non-Claude processes.
 #[allow(clippy::too_many_arguments)]
 pub fn render_detail_view(
     f: &mut Frame,
@@ -216,19 +227,33 @@ pub fn render_detail_view(
     subtree_stats: Option<SubtreeStats>,
     graph_style: GraphStyle,
     palette: &Palette,
+    telemetry: Option<&AgentTelemetry>,
 ) {
+    // Show Claude-specific sections only when there is real telemetry data.
+    let show_claude = telemetry.is_some_and(|t| t.has_data());
+
     // The info table grows by 3 rows when subtree stats are present.
     let info_height = if subtree_stats.is_some() { 15 } else { 12 };
 
+    let mut constraints = vec![
+        Constraint::Length(3),           // Header
+        Constraint::Length(info_height), // Info table
+        Constraint::Fill(1),             // CPU chart
+        Constraint::Fill(1),             // Memory chart
+        Constraint::Length(4),           // Command
+    ];
+
+    if show_claude {
+        constraints.push(Constraint::Length(6)); // Token stats
+        constraints.push(Constraint::Length(3)); // Health/decay score
+        constraints.push(Constraint::Length(3)); // Pending tool
+        constraints.push(Constraint::Min(10)); // Recent messages
+        constraints.push(Constraint::Length(3)); // Subagent summary
+    }
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),           // Header
-            Constraint::Length(info_height), // Info table (grows when subtree stats shown)
-            Constraint::Fill(1),             // CPU chart (splits remaining space with memory)
-            Constraint::Fill(1),             // Memory chart
-            Constraint::Length(4),           // Command
-        ])
+        .constraints(constraints)
         .split(area);
 
     render_header(f, sections[0], info, palette);
@@ -240,8 +265,6 @@ pub fn render_detail_view(
         .enumerate()
         .map(|(i, &v)| (i as f64, v as f64))
         .collect();
-    // Observed max, padded by 15% and floored at 1% so the chart doesn't
-    // collapse to a flat line when usage is near zero.
     let cpu_observed_max = cpu_history.iter().copied().fold(0.0_f32, f32::max) as f64;
     let cpu_axis_max = (cpu_observed_max * 1.15).max(1.0);
     let cpu_labels = vec!["0".to_string(), format!("{:.1}%", cpu_observed_max)];
@@ -282,6 +305,210 @@ pub fn render_detail_view(
     );
 
     render_command(f, sections[4], info, palette);
+
+    // --- Claude-specific telemetry sections ----------------------------------
+    if show_claude {
+        if let Some(tel) = telemetry {
+            render_token_stats(f, sections[5], tel, palette);
+            render_health_bar(f, sections[6], tel, palette);
+            render_pending_tool(f, sections[7], tel, palette);
+            render_recent_messages(f, sections[8], tel, palette);
+            render_subagent_summary(f, sections[9], tel, palette);
+        }
+    }
+}
+
+/// Render token statistics for the selected Claude session.
+fn render_token_stats(f: &mut Frame, area: Rect, tel: &AgentTelemetry, palette: &Palette) {
+    let input_str = tel
+        .input_tokens
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+    let output_str = tel
+        .output_tokens
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+    let cache_r_str = tel
+        .cache_read_tokens
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+    let cache_w_str = tel
+        .cache_write_tokens
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+    let ctx_str = tel
+        .context_tokens
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+    let window_str = tel
+        .context_window
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+    let cost_str = tel
+        .cost_usd
+        .map(|c| format!("${c:.4}"))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+
+    let lines = vec![
+        kv("Input tokens:   ", &input_str, palette),
+        kv("Output tokens:  ", &output_str, palette),
+        kv("Cache read:     ", &cache_r_str, palette),
+        kv("Cache write:    ", &cache_w_str, palette),
+        kv("Context tokens: ", &ctx_str, palette),
+        kv("Context window: ", &window_str, palette),
+        kv("Cost (est.):    ", &cost_str, palette),
+    ];
+
+    let block = Block::default()
+        .title(" Token Stats ")
+        .title_style(palette.title_style())
+        .borders(Borders::ALL)
+        .border_style(palette.border_style());
+
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Render the decay / health score as a Unicode block bar.
+///
+/// Format: `Decay  ████████░░░░░░░░░░░░  37`
+fn render_health_bar(f: &mut Frame, area: Rect, tel: &AgentTelemetry, palette: &Palette) {
+    let score = tel.decay_score.unwrap_or(0);
+    let bar_len = 20usize;
+    let filled = (score as usize * bar_len / 100).min(bar_len);
+    let empty = bar_len - filled;
+
+    let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(empty);
+
+    let bar_style = if score < 40 {
+        Style::new().fg(Color::Green)
+    } else if score < 70 {
+        Style::new().fg(Color::Yellow)
+    } else {
+        Style::new().fg(Color::Red)
+    };
+
+    let line = Line::from(vec![
+        Span::styled("Decay  ", palette.label_style()),
+        Span::styled(bar, bar_style),
+        Span::styled(format!("  {score}"), Style::new().fg(palette.foreground)),
+    ]);
+
+    let block = Block::default()
+        .title(" Health ")
+        .title_style(palette.title_style())
+        .borders(Borders::ALL)
+        .border_style(palette.border_style());
+
+    f.render_widget(Paragraph::new(line).block(block), area);
+}
+
+/// Render the pending-tool section.
+fn render_pending_tool(f: &mut Frame, area: Rect, tel: &AgentTelemetry, palette: &Palette) {
+    let content = match &tel.pending_tool {
+        Some(tool) => Line::from(vec![
+            Span::styled("Pending: ", palette.label_style()),
+            Span::styled(
+                tool.clone(),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        None => Line::from(vec![Span::styled("No pending tool", palette.dim_style())]),
+    };
+
+    let block = Block::default()
+        .title(" Pending Tool ")
+        .title_style(palette.title_style())
+        .borders(Borders::ALL)
+        .border_style(palette.border_style());
+
+    f.render_widget(Paragraph::new(content).block(block), area);
+}
+
+/// Render the last 5 assistant messages.
+fn render_recent_messages(f: &mut Frame, area: Rect, tel: &AgentTelemetry, palette: &Palette) {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let lines: Vec<Line> = tel
+        .recent_messages
+        .iter()
+        .map(|msg| {
+            // Compute relative timestamp in MM:SS from the message timestamp.
+            let rel_str = parse_ts_to_unix(msg.timestamp.as_str())
+                .map(|ts| {
+                    let elapsed = now_secs.saturating_sub(ts);
+                    let m = elapsed / 60;
+                    let s = elapsed % 60;
+                    format!("{m:02}:{s:02}")
+                })
+                .unwrap_or_else(|| "??:??".to_string());
+
+            // Shorten model name.
+            let model_short = shorten_model(&msg.model);
+            let stop = msg.stop_reason.as_deref().unwrap_or("?");
+
+            // Truncate preview to 3 lines of ~80 chars.
+            let preview_lines: Vec<&str> = msg.preview.lines().take(3).collect();
+            let preview = preview_lines.join(" ");
+            let preview_trunc = super::format::truncate_chars(&preview, 80);
+
+            let header = format!("[{rel_str}] {model_short} ({stop})");
+            Line::from(vec![
+                Span::styled(header, palette.label_style()),
+                Span::raw(" "),
+                Span::styled(preview_trunc, Style::new().fg(palette.foreground)),
+            ])
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(" Recent Messages ")
+        .title_style(palette.title_style())
+        .borders(Borders::ALL)
+        .border_style(palette.border_style());
+
+    f.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+/// Render the subagent count summary.
+fn render_subagent_summary(f: &mut Frame, area: Rect, tel: &AgentTelemetry, palette: &Palette) {
+    let line = Line::from(vec![
+        Span::styled("Subagents: ", palette.label_style()),
+        Span::styled(
+            tel.subagent_count.to_string(),
+            Style::new().fg(palette.foreground),
+        ),
+    ]);
+
+    let block = Block::default()
+        .title(" Subagents ")
+        .title_style(palette.title_style())
+        .borders(Borders::ALL)
+        .border_style(palette.border_style());
+
+    f.render_widget(Paragraph::new(line).block(block), area);
+}
+
+/// Shorten a model name for display (remove the `claude-` prefix).
+fn shorten_model(model: &str) -> String {
+    model.strip_prefix("claude-").unwrap_or(model).to_string()
+}
+
+/// Parse an RFC 3339 timestamp string to Unix seconds using the `time` crate.
+fn parse_ts_to_unix(ts: &str) -> Option<u64> {
+    let dt =
+        time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339).ok()?;
+    let secs = dt.unix_timestamp();
+    if secs >= 0 {
+        Some(secs as u64)
+    } else {
+        None
+    }
 }
 
 /// Render a compact header block showing the process name, PID, and status.
