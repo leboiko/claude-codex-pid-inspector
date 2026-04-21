@@ -1,0 +1,1 @@
+{"type":"session_meta","timestamp":"2026-04-21T10:00:00Z","payload":{"id":"00000001-0000-0000-0000-000000000001","timestamp":"2026-04-21T10:00:00Z","cwd":"/Users/test/project","originator":"codex_cli_rs","cli_version":"0.116.0","source":"cli","model_provider":"openai","base_instructions":{"text":"You are Codex."}}}

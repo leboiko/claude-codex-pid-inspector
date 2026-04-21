@@ -10,17 +10,13 @@
 //! back to [`crate::app::App`] alongside the regular process snapshot, where it
 //! is stored and made available to UI renderers.
 //!
-//! # Phase 0 (this commit)
+//! # Providers
 //!
-//! The seam is fully wired but the only registered provider is [`NoopProvider`],
-//! which does nothing. The [`TelemetryMap`] therefore always arrives empty and
-//! no user-visible behaviour changes.
-//!
-//! # Future phases
-//!
-//! Phase 2 and Phase 3 will introduce concrete providers that read Claude and
-//! Codex transcript files respectively, populate [`AgentTelemetry`] fields, and
-//! infer [`AgentStatus`] from token counters and stop-reason signals.
+//! - [`ClaudeTelemetryProvider`] — reads Claude Code session files and transcripts
+//!   from `~/.claude/` (Phase 2).
+//! - [`CodexTelemetryProvider`] — reads Codex CLI rollout files from `~/.codex/`
+//!   (Phase 3). Each provider filters to its own [`ProcessKind`](crate::process::ProcessKind)
+//!   so they can coexist in the same pipeline without stepping on each other.
 //!
 //! # Threading model
 //!
@@ -30,10 +26,12 @@
 //! [`TelemetryProvider`] for the full contract.
 
 pub mod claude;
+pub mod codex;
 mod noop;
 mod types;
 
 pub use claude::ClaudeTelemetryProvider;
+pub use codex::CodexTelemetryProvider;
 pub use noop::NoopProvider;
 pub use types::{AgentStatus, AgentTelemetry, TelemetryMap, TelemetryPipeline, TelemetryProvider};
 
