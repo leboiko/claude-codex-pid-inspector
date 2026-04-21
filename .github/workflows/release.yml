@@ -198,10 +198,17 @@ jobs:
 
       - name: Download release checksums
         if: env.HAS_TOKEN == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-          merge-multiple: true
+        # SHA256SUMS is an asset on the GitHub Release, not an inter-job
+        # build artifact — it's generated inside the `release` job and
+        # attached via softprops/action-gh-release. Fetch it directly.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          gh release download "$GITHUB_REF_NAME" \
+            -R "$GITHUB_REPOSITORY" \
+            -p SHA256SUMS \
+            -D artifacts
 
       - name: Checkout tap repo
         if: env.HAS_TOKEN == 'true'
