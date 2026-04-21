@@ -3,6 +3,7 @@
 /// # Examples
 ///
 /// ```
+/// use agentop::ui::format_memory;
 /// assert_eq!(format_memory(1_500), "1.5 KB");
 /// assert_eq!(format_memory(2_097_152), "2.0 MB");
 /// ```
@@ -27,7 +28,8 @@ pub fn format_memory(bytes: u64) -> String {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(format_duration_compact(3661), "1h 1m"); // wait, days=0, hours=1 => "0d 1h 1m"
+/// use agentop::ui::format_duration_compact;
+/// assert_eq!(format_duration_compact(3661), "0d 1h 1m");
 /// assert_eq!(format_duration_compact(90), "1m 30s");
 /// ```
 pub fn format_duration_compact(seconds: u64) -> String {
@@ -48,6 +50,7 @@ pub fn format_duration_compact(seconds: u64) -> String {
 /// # Examples
 ///
 /// ```
+/// use agentop::ui::format_duration_full;
 /// assert_eq!(format_duration_full(90061), "1d 1h 1m 1s");
 /// ```
 pub fn format_duration_full(seconds: u64) -> String {

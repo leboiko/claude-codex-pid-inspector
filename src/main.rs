@@ -1,20 +1,14 @@
-mod action;
-mod app;
-mod config;
-mod event;
-mod process;
-mod tui;
-mod ui;
-
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 
-use crate::app::{ActiveView, App, KeyContext};
-use crate::event::{Event, EventHandler};
-use crate::process::{display_name, ProcessInfo, ProcessScanner, SystemStats};
+use agentop::app::{ActiveView, App, KeyContext};
+use agentop::event::{Event, EventHandler};
+use agentop::process::{display_name, ProcessInfo, ProcessScanner, SystemStats};
+use agentop::telemetry::{NoopProvider, TelemetryMap, TelemetryPipeline};
+use agentop::{tui, ui};
 
 /// Entry point: install hooks, init the terminal, run the app, then restore.
 ///
@@ -75,7 +69,7 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
     // scanner finishes, try_send simply returns Err(Full) and we skip it.
     let (scan_trigger_tx, scan_trigger_rx) = mpsc::channel::<()>(1);
     let (scan_result_tx, mut scan_result_rx) =
-        mpsc::unbounded_channel::<(Vec<ProcessInfo>, SystemStats)>();
+        mpsc::unbounded_channel::<(Vec<ProcessInfo>, SystemStats, TelemetryMap)>();
 
     // Spawn the scanner on a blocking thread pool thread so the `sysinfo`
     // syscalls never block the async reactor.
@@ -117,12 +111,12 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
                 // Drain all available scan results. In practice there will be
                 // at most one, but draining keeps the channel from backing up
                 // if renders are skipped or the scanner delivers early.
-                let mut latest: Option<(Vec<ProcessInfo>, SystemStats)> = None;
+                let mut latest: Option<(Vec<ProcessInfo>, SystemStats, TelemetryMap)> = None;
                 while let Ok(data) = scan_result_rx.try_recv() {
                     latest = Some(data);
                 }
-                if let Some((procs, stats)) = latest {
-                    app.update_processes(procs, stats);
+                if let Some((procs, stats, telemetry)) = latest {
+                    app.update_processes(procs, stats, telemetry);
                 }
 
                 terminal.draw(|f| draw(f, &mut app))?;
@@ -148,17 +142,25 @@ async fn run(terminal: &mut tui::Tui) -> color_eyre::Result<()> {
 /// from within a `spawn_blocking` context — the async runtime is still active,
 /// but this thread is allowed to block.
 ///
+/// The telemetry pipeline is constructed here and lives on this thread for
+/// its entire lifetime — no locks or `Arc` wrappers are needed because the
+/// pipeline is accessed from only this single thread.
+///
 /// # Arguments
 ///
 /// * `trigger_rx`  - Receives `()` signals that request a new scan.
-/// * `result_tx`   - Sends the resulting `Vec<ProcessInfo>` back to the main loop.
+/// * `result_tx`   - Sends `(processes, stats, telemetry)` back to the main loop.
 fn scanner_task(
     mut trigger_rx: mpsc::Receiver<()>,
-    result_tx: mpsc::UnboundedSender<(Vec<ProcessInfo>, SystemStats)>,
+    result_tx: mpsc::UnboundedSender<(Vec<ProcessInfo>, SystemStats, TelemetryMap)>,
 ) {
     // ProcessScanner::new() performs an initial seeding refresh internally,
     // so the first call to refresh() will yield meaningful CPU deltas.
     let mut scanner = ProcessScanner::new();
+
+    // Build the telemetry pipeline. Phase 0 registers only the NoopProvider;
+    // Phase 2/3 will add concrete Claude and Codex transcript providers here.
+    let mut pipeline = TelemetryPipeline::new().with_provider(Box::new(NoopProvider));
 
     // Grab the handle to the current Tokio runtime so we can block on async
     // channel receives from this synchronous context.
@@ -173,11 +175,12 @@ fn scanner_task(
             break;
         }
 
-        let data = scanner.refresh();
+        let (processes, stats) = scanner.refresh();
+        let telemetry = pipeline.enrich(&processes);
 
         // If the receiver was dropped (application exiting) the error is
         // silently ignored — we just stop sending.
-        if result_tx.send(data).is_err() {
+        if result_tx.send((processes, stats, telemetry)).is_err() {
             break;
         }
     }

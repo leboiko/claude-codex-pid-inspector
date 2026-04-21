@@ -2,11 +2,16 @@
 name = "agentop"
 version = "0.7.1"
 edition = "2021"
+rust-version = "1.85"
 description = "A TUI process inspector for Claude Code and OpenAI Codex CLI — like top for AI coding agents"
 license = "MIT"
 repository = "https://github.com/leboiko/claude-codex-pid-inspector"
 keywords = ["tui", "process", "claude", "codex", "monitor"]
 categories = ["command-line-utilities"]
+
+[[bin]]
+name = "agentop"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.30.0"
