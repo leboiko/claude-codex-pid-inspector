@@ -178,21 +178,31 @@ jobs:
     name: Update Homebrew tap
     needs: [release]
     runs-on: ubuntu-latest
-    # Gated on the tap-maintenance PAT so the job quietly no-ops on repos
-    # that haven't set up the tap yet. Without the secret, GitHub skips the
-    # job with an "all jobs cancelled" message in the run summary.
-    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    # Note: GitHub Actions does not allow `secrets.*` in job-level `if:`
+    # (https://github.com/orgs/community/discussions/17245). Instead, every
+    # step guards on a `HAS_TOKEN` job env that evaluates the secret into a
+    # plain string. When the token is absent the job "runs" but all steps
+    # no-op, leaving a clean summary.
+    env:
+      HAS_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && 'true' || 'false' }}
     steps:
+      - name: Report skip reason
+        if: env.HAS_TOKEN != 'true'
+        run: echo "HOMEBREW_TAP_TOKEN is not set on this repo — skipping Homebrew formula publish."
+
       - name: Checkout source repo
+        if: env.HAS_TOKEN == 'true'
         uses: actions/checkout@v6
 
       - name: Download release checksums
+        if: env.HAS_TOKEN == 'true'
         uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Checkout tap repo
+        if: env.HAS_TOKEN == 'true'
         uses: actions/checkout@v6
         with:
           repository: leboiko/homebrew-tap
@@ -200,6 +210,7 @@ jobs:
           path: homebrew-tap
 
       - name: Render formula
+        if: env.HAS_TOKEN == 'true'
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           mkdir -p homebrew-tap/Formula
@@ -207,6 +218,7 @@ jobs:
             > homebrew-tap/Formula/agentop.rb
 
       - name: Commit and push
+        if: env.HAS_TOKEN == 'true'
         working-directory: homebrew-tap
         run: |
           VERSION=${GITHUB_REF_NAME#v}
