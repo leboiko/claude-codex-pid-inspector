@@ -1,3 +1,29 @@
+/// Truncate `s` to at most `max_chars` Unicode scalar values, appending
+/// `"..."` when truncation occurred.
+///
+/// Byte-indexed slicing (e.g. `&s[..n]`) panics when `n` falls inside a
+/// multi-byte UTF-8 sequence. Transcript content often contains em dashes,
+/// smart quotes, and other multi-byte characters, so anywhere we clip
+/// user-facing text we must count by chars rather than bytes.
+///
+/// # Examples
+///
+/// ```
+/// use agentop::ui::truncate_chars;
+/// assert_eq!(truncate_chars("hello", 10), "hello");
+/// assert_eq!(truncate_chars("hello world", 5), "hello...");
+/// // Multi-byte safe: an em dash is three bytes, one char.
+/// assert_eq!(truncate_chars("a—b—c", 3), "a—b...");
+/// ```
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max_chars).collect();
+        format!("{head}...")
+    }
+}
+
 /// Format a byte count as a human-readable string with one decimal place.
 ///
 /// # Examples

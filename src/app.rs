@@ -223,8 +223,18 @@ pub struct App {
     ///
     /// Keyed by PID; entries are pruned alongside `cpu_history` when a process
     /// exits. Phase 0 always delivers an empty map (only the [`crate::telemetry::NoopProvider`]
-    /// is registered); Phase 2/3 will populate real values.
+    /// is registered); Phase 2 populates real values for Claude sessions.
     pub telemetry: TelemetryMap,
+
+    /// When `true`, the process tree shows the agent telemetry column set instead
+    /// of the default CPU/memory columns. Toggled with the `t` key.
+    pub telemetry_view: bool,
+
+    /// Per-PID cost burn tracking: `(Instant, cost_usd_at_sample)`.
+    ///
+    /// Used to detect a cost increase of > $0.10 in the last 30 seconds and
+    /// append a burn indicator (`↑`) to the cost cell in the agent view.
+    pub cost_burn_history: HashMap<u32, (Instant, f64)>,
 }
 
 impl App {
@@ -367,6 +377,9 @@ impl App {
                 }
                 self.rebuild_flat_list();
             }
+            Action::ToggleTelemetryView => {
+                self.telemetry_view = !self.telemetry_view;
+            }
         }
     }
 
@@ -444,6 +457,19 @@ impl App {
         self.mem_history.retain(|pid, _| live_pids.contains(pid));
         // Prune telemetry alongside cpu/mem history so stale PIDs don't accumulate.
         self.telemetry.retain(|pid, _| live_pids.contains(pid));
+        self.cost_burn_history
+            .retain(|pid, _| live_pids.contains(pid));
+
+        // Update cost burn tracking for the burn-rate indicator in the agent view.
+        // For each PID that now has a cost, record (Instant, cost) if no entry
+        // exists yet; otherwise leave the old entry in place so we can compare.
+        for (&pid, tel) in &self.telemetry {
+            if let Some(cost) = tel.cost_usd {
+                self.cost_burn_history
+                    .entry(pid)
+                    .or_insert_with(|| (Instant::now(), cost));
+            }
+        }
 
         self.forest = build_forest(&processes);
         preserve_expansion(&mut self.forest, &old_expansion);
@@ -726,6 +752,7 @@ impl App {
                 KeyCode::Char('x') => Some(Action::KillRequest),
                 KeyCode::Char('c') => Some(Action::ToggleConfig),
                 KeyCode::Char('/') => Some(Action::EnterFilter),
+                KeyCode::Char('t') | KeyCode::Char('T') => Some(Action::ToggleTelemetryView),
                 _ => None,
             },
             ActiveView::Detail => match key.code {
@@ -733,6 +760,7 @@ impl App {
                 KeyCode::Esc => Some(Action::BackToTree),
                 KeyCode::Char('x') => Some(Action::KillRequest),
                 KeyCode::Char('c') => Some(Action::ToggleConfig),
+                KeyCode::Char('t') | KeyCode::Char('T') => Some(Action::ToggleTelemetryView),
                 _ => None,
             },
         }

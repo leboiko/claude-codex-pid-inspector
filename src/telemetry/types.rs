@@ -8,6 +8,23 @@ use std::collections::HashMap;
 
 use crate::process::ProcessInfo;
 
+/// A recent assistant message for the TUI detail view.
+///
+/// **Privacy**: this type is only used for TUI display and MUST NOT be
+/// serialized to `--json` output. The `ProcessEntry::telemetry` JSON field
+/// uses a separate `TelemetryJson` struct that omits this data entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecentMessage {
+    /// RFC 3339 timestamp string.
+    pub timestamp: String,
+    /// Model identifier.
+    pub model: String,
+    /// Stop reason.
+    pub stop_reason: Option<String>,
+    /// Short preview of the message content.
+    pub preview: String,
+}
+
 /// Inferred agent status, derived from telemetry (tokens, pending tool, stop
 /// reason) and CPU. Populated by [`TelemetryProvider`]s during enrichment.
 /// Non-agent processes never get one.
@@ -75,6 +92,16 @@ pub struct AgentTelemetry {
 
     /// Inferred activity status. `None` means the provider did not compute one.
     pub status: Option<AgentStatus>,
+
+    /// 0–100 session health decay score. Higher values indicate more concern
+    /// (e.g. context filling up). `None` if not computed by the provider.
+    pub decay_score: Option<u8>,
+
+    /// Recent assistant messages for the TUI detail view (newest last).
+    ///
+    /// **Privacy**: MUST NOT be serialized to `--json` output. See the
+    /// documentation in `output/json.rs` for the serialisation boundary.
+    pub recent_messages: Vec<RecentMessage>,
 }
 
 impl AgentTelemetry {
@@ -100,6 +127,8 @@ impl AgentTelemetry {
             || self.last_stop_reason.is_some()
             || self.subagent_count > 0
             || self.status.is_some()
+            || self.decay_score.is_some()
+            || !self.recent_messages.is_empty()
     }
 
     /// Returns the fraction of the context window currently consumed, or

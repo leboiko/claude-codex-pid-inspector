@@ -47,4 +47,6 @@ pub enum Action {
     FilterInput(char),
     /// Delete the last character from the filter query (Backspace).
     FilterBackspace,
+    /// Toggle between the base process view and the agent telemetry view (bound to `t`).
+    ToggleTelemetryView,
 }

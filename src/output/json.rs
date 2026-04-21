@@ -2,6 +2,17 @@
 //!
 //! Serialises a full process-tree snapshot to a stable, versioned JSON schema.
 //! See `docs/output-schema.md` for the field reference and stability promise.
+//!
+//! # Privacy guarantee
+//!
+//! **This module MUST NOT serialize any transcript content, message text, or
+//! tool inputs.** The `telemetry` subfield contains only aggregated counters
+//! and metadata. Raw tool-input JSON and message bodies are held in memory by
+//! the TUI detail view and are never written here. Maintainers adding new
+//! fields must verify they carry no user content before including them in the
+//! JSON output.
+
+use std::collections::HashMap;
 
 use serde::Serialize;
 use time::format_description::well_known::Rfc3339;
@@ -11,6 +22,7 @@ use crate::app::AgentSummary;
 use crate::process::scanner::SystemStats;
 use crate::process::tree::ProcessNode;
 use crate::process::{display_name, process_kind, ActivityState, ProcessKind};
+use crate::telemetry::{AgentStatus, AgentTelemetry, TelemetryMap};
 
 /// Schema version embedded in every snapshot.
 ///
@@ -71,6 +83,52 @@ pub struct AgentSummaryJson {
     pub total_memory_bytes: u64,
 }
 
+/// Telemetry subfield included in each process entry.
+///
+/// Serialized as `"telemetry": null` when [`AgentTelemetry::has_data`] is
+/// false. When present, contains only aggregated counters and metadata —
+/// **never** any transcript text, message content, or tool inputs.
+///
+/// The `kind` field disambiguates the telemetry source so future Codex or
+/// other providers can be distinguished at the JSON level.
+#[derive(Debug, Serialize)]
+pub struct TelemetryJson {
+    /// Provider kind: `"claude"` for Claude Code sessions.
+    pub kind: &'static str,
+    /// Unique session identifier.
+    pub session_id: Option<String>,
+    /// Active model identifier (e.g. `"claude-opus-4-7"`).
+    pub model: Option<String>,
+    /// Inferred agent status string.
+    pub status: Option<String>,
+    /// Cumulative input token count.
+    pub input_tokens: Option<u64>,
+    /// Cumulative output token count.
+    pub output_tokens: Option<u64>,
+    /// Cumulative cache-read token count.
+    pub cache_read_tokens: Option<u64>,
+    /// Cumulative cache-write token count.
+    pub cache_write_tokens: Option<u64>,
+    /// Current context token estimate (from most recent turn).
+    pub context_tokens: Option<u64>,
+    /// Maximum context window size for the active model.
+    pub context_window: Option<u64>,
+    /// Fraction of context window consumed (`context_tokens / context_window`).
+    pub context_fraction: Option<f32>,
+    /// Estimated session cost in USD.
+    pub cost_usd: Option<f64>,
+    /// `true` when `cost_usd` was derived from a local pricing table.
+    pub cost_is_estimated: bool,
+    /// Tool name currently awaiting user approval, if any.
+    pub pending_tool: Option<String>,
+    /// Most recent model stop reason (e.g. `"tool_use"`, `"end_turn"`).
+    pub last_stop_reason: Option<String>,
+    /// Number of active subagent tasks.
+    pub subagent_count: usize,
+    /// 0–100 session health decay score.
+    pub decay_score: Option<u8>,
+}
+
 /// A single process entry in the tree, with nested children.
 #[derive(Debug, Serialize)]
 pub struct ProcessEntry {
@@ -104,6 +162,10 @@ pub struct ProcessEntry {
     pub activity_state: Option<String>,
     /// Seconds the process has been in the current activity state; `null` for non-roots.
     pub activity_state_seconds: Option<u64>,
+    /// Telemetry enrichment from the Claude/Codex provider; `null` when not available.
+    ///
+    /// Privacy: contains only aggregated counters and metadata. No transcript content.
+    pub telemetry: Option<TelemetryJson>,
     /// Direct child processes (same shape, recursive).
     pub children: Vec<ProcessEntry>,
 }
@@ -121,12 +183,45 @@ pub struct ProcessEntry {
 /// * `summary`         - Pre-computed agent summary.
 /// * `activity_states` - Per-PID activity state injected by `App`.
 /// * `activity_since`  - Per-PID time-in-state in seconds.
+/// * `telemetry`       - Per-PID telemetry map from the provider pipeline.
 pub fn build_snapshot(
     forest: &[ProcessNode],
     stats: &SystemStats,
     summary: &AgentSummary,
-    activity_states: &std::collections::HashMap<u32, ActivityState>,
-    activity_since_secs: &std::collections::HashMap<u32, u64>,
+    activity_states: &HashMap<u32, ActivityState>,
+    activity_since_secs: &HashMap<u32, u64>,
+) -> Snapshot {
+    build_snapshot_with_telemetry(
+        forest,
+        stats,
+        summary,
+        activity_states,
+        activity_since_secs,
+        &TelemetryMap::new(),
+    )
+}
+
+/// Build a [`Snapshot`] including per-process telemetry data.
+///
+/// Used by the `--json` output path when the app state machine is running and
+/// telemetry is available. The non-telemetry variant [`build_snapshot`] is
+/// kept for one-shot mode where no telemetry pipeline runs.
+///
+/// # Arguments
+///
+/// * `forest`          - Root process nodes with fully computed subtree stats.
+/// * `stats`           - System-wide resource snapshot.
+/// * `summary`         - Pre-computed agent summary.
+/// * `activity_states` - Per-PID activity state injected by `App`.
+/// * `activity_since`  - Per-PID time-in-state in seconds.
+/// * `telemetry`       - Per-PID telemetry map from the provider pipeline.
+pub fn build_snapshot_with_telemetry(
+    forest: &[ProcessNode],
+    stats: &SystemStats,
+    summary: &AgentSummary,
+    activity_states: &HashMap<u32, ActivityState>,
+    activity_since_secs: &HashMap<u32, u64>,
+    telemetry: &TelemetryMap,
 ) -> Snapshot {
     let now = OffsetDateTime::now_utc();
     let generated_at = now
@@ -135,7 +230,7 @@ pub fn build_snapshot(
 
     let processes: Vec<ProcessEntry> = forest
         .iter()
-        .map(|node| build_entry(node, activity_states, activity_since_secs))
+        .map(|node| build_entry(node, activity_states, activity_since_secs, telemetry))
         .collect();
 
     Snapshot {
@@ -163,8 +258,9 @@ pub fn build_snapshot(
 /// Build a single [`ProcessEntry`] from a [`ProcessNode`], recursing into children.
 fn build_entry(
     node: &ProcessNode,
-    activity_states: &std::collections::HashMap<u32, ActivityState>,
-    activity_since_secs: &std::collections::HashMap<u32, u64>,
+    activity_states: &HashMap<u32, ActivityState>,
+    activity_since_secs: &HashMap<u32, u64>,
+    telemetry: &TelemetryMap,
 ) -> ProcessEntry {
     let info = &node.info;
     let pid = info.pid;
@@ -189,10 +285,17 @@ fn build_entry(
         (None, None)
     };
 
+    // Build the telemetry subfield. Always present (never skip_serializing_if)
+    // but may be null when no telemetry data exists.
+    let telemetry_json = telemetry
+        .get(&pid)
+        .filter(|t| t.has_data())
+        .map(build_telemetry_json);
+
     let children = node
         .children
         .iter()
-        .map(|child| build_entry(child, activity_states, activity_since_secs))
+        .map(|child| build_entry(child, activity_states, activity_since_secs, telemetry))
         .collect();
 
     ProcessEntry {
@@ -211,7 +314,43 @@ fn build_entry(
         uptime_seconds: info.run_time,
         activity_state,
         activity_state_seconds,
+        telemetry: telemetry_json,
         children,
+    }
+}
+
+/// Convert an [`AgentTelemetry`] into the JSON-serializable [`TelemetryJson`] form.
+///
+/// Privacy: only aggregated counters and metadata are included. No transcript
+/// text, message content, or tool inputs.
+fn build_telemetry_json(t: &AgentTelemetry) -> TelemetryJson {
+    let status_str = t.status.map(|s| match s {
+        AgentStatus::Processing => "processing",
+        AgentStatus::NeedsInput => "needs_input",
+        AgentStatus::WaitingInput => "waiting_input",
+        AgentStatus::Idle => "idle",
+        AgentStatus::Finished => "finished",
+        AgentStatus::Unknown => "unknown",
+    });
+
+    TelemetryJson {
+        kind: "claude",
+        session_id: t.session_id.clone(),
+        model: t.model.clone(),
+        status: status_str.map(str::to_string),
+        input_tokens: t.input_tokens,
+        output_tokens: t.output_tokens,
+        cache_read_tokens: t.cache_read_tokens,
+        cache_write_tokens: t.cache_write_tokens,
+        context_tokens: t.context_tokens,
+        context_window: t.context_window,
+        context_fraction: t.context_fraction(),
+        cost_usd: t.cost_usd,
+        cost_is_estimated: t.cost_is_estimated,
+        pending_tool: t.pending_tool.clone(),
+        last_stop_reason: t.last_stop_reason.clone(),
+        subagent_count: t.subagent_count,
+        decay_score: t.decay_score,
     }
 }
 

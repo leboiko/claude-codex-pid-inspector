@@ -10,9 +10,12 @@ use tokio::sync::mpsc;
 use agentop::app::{ActiveView, App, KeyContext};
 use agentop::cli::{self, Cli};
 use agentop::event::{Event, EventHandler};
-use agentop::output::{build_snapshot, print_table, to_compact_json, to_pretty_json};
+use agentop::output::{
+    build_snapshot_with_telemetry, print_table, to_compact_json, to_pretty_json,
+};
 use agentop::process::{build_forest, display_name, ProcessInfo, ProcessScanner, SystemStats};
-use agentop::telemetry::{NoopProvider, TelemetryMap, TelemetryPipeline};
+use agentop::telemetry::claude::discovery::SessionIndex;
+use agentop::telemetry::{ClaudeTelemetryProvider, NoopProvider, TelemetryMap, TelemetryPipeline};
 use agentop::{tui, ui};
 
 /// Entry point: parse arguments, then dispatch to the appropriate mode.
@@ -68,6 +71,19 @@ fn run_one_shot(args: &Cli) -> color_eyre::Result<()> {
     std::thread::sleep(Duration::from_millis(500));
     let (processes, stats) = scanner.refresh();
 
+    // Mirror the TUI's provider selection: enable the Claude provider when
+    // its on-disk state directory exists, otherwise stay with the noop so
+    // one-shot output works identically on machines without Claude installed.
+    let mut pipeline = {
+        let probe = SessionIndex::new();
+        if probe.sessions_dir_exists() {
+            TelemetryPipeline::new().with_provider(Box::new(ClaudeTelemetryProvider::new()))
+        } else {
+            TelemetryPipeline::new().with_provider(Box::new(NoopProvider))
+        }
+    };
+    let telemetry = pipeline.enrich(&processes);
+
     let mut forest = build_forest(&processes);
 
     // Compute agent summary from the forest (mirrors App::compute_agent_summary).
@@ -89,14 +105,16 @@ fn run_one_shot(args: &Cli) -> color_eyre::Result<()> {
     }
 
     if args.json {
-        // Build snapshot with empty activity maps — one-shot mode does not run
-        // the App state machine, so no history is available.
-        let snapshot = build_snapshot(
+        // Activity states need the App state machine to be tracked, so in
+        // one-shot mode they are absent. Telemetry is still available via
+        // the provider pipeline above.
+        let snapshot = build_snapshot_with_telemetry(
             &forest,
             &stats,
             &summary,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &telemetry,
         );
         let json = if args.pretty {
             to_pretty_json(&snapshot)?
@@ -248,9 +266,17 @@ fn scanner_task(
     // so the first call to refresh() will yield meaningful CPU deltas.
     let mut scanner = ProcessScanner::new();
 
-    // Build the telemetry pipeline. Phase 0 registers only the NoopProvider;
-    // Phase 2/3 will add concrete Claude and Codex transcript providers here.
-    let mut pipeline = TelemetryPipeline::new().with_provider(Box::new(NoopProvider));
+    // Build the telemetry pipeline. Register ClaudeTelemetryProvider when
+    // ~/.claude/sessions/ exists on this machine; otherwise fall back to
+    // NoopProvider so the tool works on machines without Claude installed.
+    let mut pipeline = {
+        let probe = SessionIndex::new();
+        if probe.sessions_dir_exists() {
+            TelemetryPipeline::new().with_provider(Box::new(ClaudeTelemetryProvider::new()))
+        } else {
+            TelemetryPipeline::new().with_provider(Box::new(NoopProvider))
+        }
+    };
 
     // Grab the handle to the current Tokio runtime so we can block on async
     // channel receives from this synchronous context.
@@ -311,6 +337,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                 app.sort_column,
                 app.sort_direction,
                 palette,
+                &app.telemetry,
+                app.telemetry_view,
+                &app.cost_burn_history,
             );
         }
         ActiveView::Detail => {
@@ -326,6 +355,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                     .get(&info.pid)
                     .map(|d| d.iter().copied().collect())
                     .unwrap_or_default();
+                let tel = app
+                    .selected_detail
+                    .as_ref()
+                    .and_then(|d| app.telemetry.get(&d.pid));
                 ui::render_detail_view(
                     f,
                     main_area,
@@ -335,6 +368,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                     app.selected_detail_subtree,
                     app.graph_style,
                     palette,
+                    tel,
                 );
             }
         }
