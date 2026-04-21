@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-21
+
+First stable release. Starting from this tag, the project follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) for its
+**public CLI**, **stdout / stderr conventions**, **`--json` schema**
+(currently `schema_version = 1`), **exit codes**, and **config-file
+layout**. TUI keybindings, library internals, and the cognitive-decay
+formula remain explicitly unstable — see the
+[Stability chapter](https://leboiko.github.io/claude-codex-pid-inspector/stability.html)
+for the full contract.
+
 ### Added
 - **Documentation site** at <https://leboiko.github.io/claude-codex-pid-inspector/>
   — mdBook-based reference covering installation, TUI keybindings, telemetry
@@ -168,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subtree statistics aggregation and an agent summary shown in the status bar.
 - Light themes with full-coverage background colors.
 
-[Unreleased]: https://github.com/leboiko/claude-codex-pid-inspector/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/leboiko/claude-codex-pid-inspector/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/leboiko/claude-codex-pid-inspector/compare/v0.7.1...v1.0.0
 [0.7.1]: https://github.com/leboiko/claude-codex-pid-inspector/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/leboiko/claude-codex-pid-inspector/releases/tag/v0.7.0
