@@ -3,8 +3,11 @@
 A terminal UI (TUI) process inspector for macOS and Linux that monitors
 running Claude Code and OpenAI Codex CLI processes. Displays an
 expandable process tree with live CPU, memory, status, and uptime
-metrics, and lets you drill into any process for sparkline charts and
-full command-line details.
+metrics, live **token / cost / context %** telemetry for every detected
+agent session, and lets you drill into any process for sparkline charts
+and a transcript tail.
+
+**Documentation:** <https://leboiko.github.io/claude-codex-pid-inspector/>
 
 ---
 
@@ -43,44 +46,52 @@ through them.
 
 ## Installation
 
-Requires [Rust](https://rustup.rs/) 1.70 or later.
+Requires macOS or Linux. Windows is not supported. MSRV is Rust 1.85.
 
-### Install from crates.io (recommended)
+### From crates.io (recommended)
 
 ```sh
 cargo install agentop
 ```
 
-### Install from GitHub
+### From Homebrew
+
+> Once the tap repository `leboiko/homebrew-tap` is published:
 
 ```sh
-cargo install --git https://github.com/leboiko/agentop.git
+brew install leboiko/tap/agentop
 ```
 
-### Install from a local clone
+### From Nix
 
 ```sh
-git clone https://github.com/leboiko/agentop.git
-cd agentop
+nix run github:leboiko/claude-codex-pid-inspector
+```
+
+### From AUR (Arch Linux)
+
+```sh
+yay -S agentop-bin
+```
+
+### Prebuilt binaries
+
+Each tagged release ships SHA256-checksummed tarballs for five targets
+(`x86_64`/`aarch64` on `linux-gnu`, `x86_64` on `linux-musl`, `x86_64`/
+`aarch64` on `darwin`) to the [Releases page](https://github.com/leboiko/claude-codex-pid-inspector/releases).
+
+### From source
+
+```sh
+git clone https://github.com/leboiko/claude-codex-pid-inspector.git
+cd claude-codex-pid-inspector
 cargo install --path .
 ```
-
-`cargo install` builds with `--release` by default, so the binary is
-fully optimized (LTO, single codegen unit, stripped symbols) as
-configured in the `[profile.release]` section of `Cargo.toml`.
 
 ### Verify installation
 
 ```sh
-agentop --version   # or just: which agentop
-```
-
-If `~/.cargo/bin` is not on your `PATH`, add it:
-
-```sh
-# bash/zsh
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+agentop --version
 ```
 
 ### Uninstall
@@ -88,6 +99,20 @@ source ~/.zshrc
 ```sh
 cargo uninstall agentop
 ```
+
+---
+
+## Stability
+
+agentop follows [Semantic Versioning](https://semver.org/) from 1.0.0 onwards.
+The CLI flags, stdout / stderr conventions, `--json` schema (currently
+`schema_version=1`), and config-file layout are the stable surfaces covered
+by the version contract. TUI keybindings, library internals, and the
+cognitive-decay formula are explicitly **unstable** and may evolve in minor
+releases.
+
+See the [Stability chapter](https://leboiko.github.io/claude-codex-pid-inspector/stability.html)
+of the docs site for the full policy.
 
 ---
 

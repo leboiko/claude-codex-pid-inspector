@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Documentation site** at <https://leboiko.github.io/claude-codex-pid-inspector/>
+  — mdBook-based reference covering installation, TUI keybindings, telemetry
+  providers, the `--json` schema, terminal support matrix, privacy model, and
+  the stability policy. Built on every push to `master` via the new
+  `.github/workflows/docs.yml`.
+- **Packaging templates** for Homebrew (`packaging/homebrew/agentop.rb.tmpl`)
+  and AUR (`packaging/aur/PKGBUILD-bin.tmpl`), plus render scripts under
+  `scripts/` that stamp them with the release version and checksums. The
+  release workflow auto-publishes the Homebrew formula to
+  `leboiko/homebrew-tap` when a `HOMEBREW_TAP_TOKEN` secret is configured;
+  skipped gracefully otherwise.
+- **Nix flake** (`flake.nix`) exposing the binary via `nix run` and a dev
+  shell with Rust, cargo-deny, cargo-audit, and mdBook pre-installed.
+- **Explicit stability policy**: the new `book/src/stability.md` chapter
+  documents which surfaces follow semver (CLI flags, stdout conventions,
+  `--json` schema, exit codes, config file) and which are explicitly
+  unstable (TUI keybindings, library internals, cognitive-decay formula).
+  `README.md` gains a short Stability section linking to the full chapter.
 - **Curated focus filters** (`F` key, cycles): five lenses selectable in the
   tree view — `all` (default, no filter), `attention` (status `NeedsInput` or
   context ≥ 80%), `high-cpu` (CPU ≥ 30%), `high-context` (context ≥ 80%),
