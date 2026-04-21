@@ -93,19 +93,24 @@ inside `children` with `kind: null`.
 
 ---
 
-## `telemetry` object (Claude provider)
+## `telemetry` object
+
+The shape of the `telemetry` object is the same for all providers. Fields that
+a provider does not track are `null`. The `provider` field identifies the source.
+
+`schema_version` remains at **1** — this field is additive.
+
+### Claude provider
 
 Present on root-level Claude process entries when `~/.claude/sessions/` exists
 and a matching session file has been found for the PID. `null` otherwise.
 
-`schema_version` remains at **1** — this field is additive.
-
 | Field                  | Type            | Description |
 |------------------------|-----------------|-------------|
-| `provider`             | string          | Always `"claude"` for the Claude provider |
+| `provider`             | string          | Always `"claude"` |
 | `session_id`           | string or null  | Claude session UUID |
 | `model`                | string or null  | Model identifier from the most recent turn |
-| `status`               | string or null  | Agent status: `"processing"`, `"needs_input"`, `"waiting_input"`, `"idle"`, or `"unknown"` |
+| `status`               | string or null  | Agent status (see status values below) |
 | `input_tokens`         | integer         | Cumulative input tokens for this session |
 | `output_tokens`        | integer         | Cumulative output tokens for this session |
 | `cache_write_tokens`   | integer         | Cumulative cache-write tokens |
@@ -116,9 +121,39 @@ and a matching session file has been found for the PID. `null` otherwise.
 | `cost_usd`             | float           | Accumulated session cost in USD (estimated) |
 | `cost_is_estimated`    | boolean         | Always `true` — cost is derived from a local pricing table |
 | `pending_tool`         | string or null  | Name of the tool currently awaiting a result, if any |
-| `decay_score`          | integer or null | Context-health score 0–100 (higher = more pressure); Phase 2 uses context fill only |
+| `decay_score`          | integer or null | Context-health score 0–100 (higher = more pressure) |
 | `subagent_count`       | integer         | Number of subagent task files found under `/tmp/claude-{uid}/...` |
 | `last_event_timestamp` | string or null  | RFC 3339 timestamp of the most recent assistant event |
+
+### Codex provider
+
+Present on root-level Codex process entries when `~/.codex/sessions/` exists
+(or `$CODEX_HOME/sessions/`) and a rollout file whose filename timestamp is
+within ±90 s of the process start time is found. `null` otherwise.
+
+| Field                  | Type            | Description |
+|------------------------|-----------------|-------------|
+| `provider`             | string          | Always `"codex"` |
+| `session_id`           | string or null  | Codex session UUID from `session_meta` event |
+| `model`                | string or null  | Model from `turn_context` event (prefers `collaboration_mode.settings.model`) |
+| `status`               | string or null  | Agent status (see status values below) |
+| `input_tokens`         | integer or null | Cumulative input tokens (latest `token_count` event) |
+| `output_tokens`        | integer or null | Cumulative output tokens |
+| `cache_write_tokens`   | null            | Not exposed in the Codex rollout format |
+| `cache_read_tokens`    | integer or null | Cumulative cached input tokens |
+| `context_tokens`       | integer or null | `input + cached + output + reasoning` from most recent `token_count` |
+| `context_window`       | integer or null | Model context window from `model_context_window` field |
+| `context_fill_percent` | float or null   | `context_tokens / context_window * 100` |
+| `cost_usd`             | float or null   | Estimated cost (input + cached + output + reasoning at output rate) |
+| `cost_is_estimated`    | boolean         | `true` when model is known; `false` when no model seen yet |
+| `pending_tool`         | string or null  | Name of the most recent unresolved `function_call` or `custom_tool_call` |
+| `decay_score`          | null            | Not computed for Codex sessions |
+| `subagent_count`       | integer         | Always `0` — Codex does not use subagent task files |
+| `last_event_timestamp` | null            | Not available in the Codex rollout format |
+
+Pricing table is pinned at `2026-04-21` and covers: `gpt-5-codex`, `gpt-5`,
+`o4-mini`, `o4`, `o3-mini`, `o3`, `gpt-4.1`, `gpt-4o`, `gpt-4`.
+Model lookup uses longest-prefix matching. All costs are estimates.
 
 ### `status` values
 
@@ -168,6 +203,43 @@ copies aggregated counters, never the `recent_messages` field.
     "total_memory_bytes": 2147483648
   },
   "processes": [
+    {
+      "pid": 5678,
+      "parent_pid": null,
+      "kind": "codex",
+      "name": "codex",
+      "display_name": "codex",
+      "cmd": ["codex"],
+      "exe_path": "/usr/local/bin/codex",
+      "cwd": "/Users/me/project",
+      "cpu_percent": 1.1,
+      "memory_bytes": 524288000,
+      "status": "Run",
+      "start_time_unix": 1714000200,
+      "uptime_seconds": 100,
+      "activity_state": "idle",
+      "activity_state_seconds": 60,
+      "telemetry": {
+        "provider": "codex",
+        "session_id": "019d2d54-207e-7b80-b98e-2968e4d1204a",
+        "model": "gpt-5",
+        "status": "waiting_input",
+        "input_tokens": 25000,
+        "output_tokens": 1800,
+        "cache_write_tokens": null,
+        "cache_read_tokens": 3000,
+        "context_tokens": 29800,
+        "context_window": 258400,
+        "context_fill_percent": 11.5,
+        "cost_usd": 0.19,
+        "cost_is_estimated": true,
+        "pending_tool": null,
+        "decay_score": null,
+        "subagent_count": 0,
+        "last_event_timestamp": null
+      },
+      "children": []
+    },
     {
       "pid": 1234,
       "parent_pid": null,

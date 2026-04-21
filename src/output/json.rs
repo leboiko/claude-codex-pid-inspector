@@ -89,11 +89,11 @@ pub struct AgentSummaryJson {
 /// false. When present, contains only aggregated counters and metadata —
 /// **never** any transcript text, message content, or tool inputs.
 ///
-/// The `kind` field disambiguates the telemetry source so future Codex or
-/// other providers can be distinguished at the JSON level.
+/// The `kind` field disambiguates the telemetry source: `"claude"` for Claude
+/// Code sessions and `"codex"` for Codex CLI sessions.
 #[derive(Debug, Serialize)]
 pub struct TelemetryJson {
-    /// Provider kind: `"claude"` for Claude Code sessions.
+    /// Provider kind: `"claude"` or `"codex"`.
     pub kind: &'static str,
     /// Unique session identifier.
     pub session_id: Option<String>,
@@ -285,12 +285,18 @@ fn build_entry(
         (None, None)
     };
 
+    // Determine the telemetry kind string from the process kind.
+    let telemetry_kind: &'static str = match process_kind(info) {
+        Some(ProcessKind::Codex) => "codex",
+        _ => "claude",
+    };
+
     // Build the telemetry subfield. Always present (never skip_serializing_if)
     // but may be null when no telemetry data exists.
     let telemetry_json = telemetry
         .get(&pid)
         .filter(|t| t.has_data())
-        .map(build_telemetry_json);
+        .map(|t| build_telemetry_json(t, telemetry_kind));
 
     let children = node
         .children
@@ -323,7 +329,7 @@ fn build_entry(
 ///
 /// Privacy: only aggregated counters and metadata are included. No transcript
 /// text, message content, or tool inputs.
-fn build_telemetry_json(t: &AgentTelemetry) -> TelemetryJson {
+fn build_telemetry_json(t: &AgentTelemetry, kind: &'static str) -> TelemetryJson {
     let status_str = t.status.map(|s| match s {
         AgentStatus::Processing => "processing",
         AgentStatus::NeedsInput => "needs_input",
@@ -334,7 +340,7 @@ fn build_telemetry_json(t: &AgentTelemetry) -> TelemetryJson {
     });
 
     TelemetryJson {
-        kind: "claude",
+        kind,
         session_id: t.session_id.clone(),
         model: t.model.clone(),
         status: status_str.map(str::to_string),
