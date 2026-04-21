@@ -9,8 +9,10 @@
 
 pub mod action;
 pub mod app;
+pub mod cli;
 pub mod config;
 pub mod event;
+pub mod output;
 pub mod process;
 pub mod telemetry;
 pub mod tui;

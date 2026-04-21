@@ -25,6 +25,10 @@ libc = "0.2"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
 dirs = "6.0.0"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+serde_json = "1"
+time = { version = "0.3", features = ["formatting", "serde", "macros"] }
 
 [profile.release]
 codegen-units = 1

@@ -126,6 +126,64 @@ is not disturbed) and begins scanning immediately.
 
 ---
 
+## Output formats
+
+`agentop` can write its process snapshot to stdout instead of launching the TUI.
+This is useful for scripting, CI pipelines, and log collection.
+
+### Plain-text table (`--list`)
+
+```sh
+agentop --list
+```
+
+Prints a fixed-width table with columns: PID | NAME | CPU% | MEM | STATUS | UPTIME.
+The NAME column uses box-drawing tree connectors that mirror the TUI view.
+When stdout is a TTY the table adapts to the terminal width; when piped it
+defaults to 120 columns.
+
+### JSON snapshot (`--json`)
+
+```sh
+agentop --json            # compact single-line (NDJSON-compatible)
+agentop --json --pretty   # indented, human-readable
+```
+
+Emits a versioned JSON object (`schema_version = 1`) containing system stats,
+an agent summary, and the full process tree. The schema is documented in
+[`docs/output-schema.md`](docs/output-schema.md).
+
+**Stability promise:** `schema_version = 1` will never remove or rename a field.
+Additive changes are allowed without a version bump. Breaking changes increment
+`schema_version` to 2.
+
+---
+
+## Shell completions
+
+Generate a completion script for your shell and install it once:
+
+```sh
+# Zsh
+agentop --generate-completions zsh > ~/.zsh/completions/_agentop
+
+# Bash
+agentop --generate-completions bash > ~/.local/share/bash-completion/completions/agentop
+
+# Fish
+agentop --generate-completions fish > ~/.config/fish/completions/agentop.fish
+
+# PowerShell
+agentop --generate-completions powershell >> $PROFILE
+
+# Elvish
+agentop --generate-completions elvish >> ~/.config/elvish/rc.elv
+```
+
+After installing, reload your shell or source the relevant file.
+
+---
+
 ## Process Detection
 
 Detection logic is implemented in `src/process/filter.rs` and operates on
