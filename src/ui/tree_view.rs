@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::app::{SortColumn, SortDirection};
-use crate::process::tree::FlatEntry;
+use crate::process::tree::{FlatEntry, FlatEntryKind};
 use crate::process::{display_name, ActivityState, ProcessKind};
 use crate::telemetry::{AgentStatus, AgentTelemetry, TelemetryMap};
 
@@ -224,8 +224,8 @@ fn memory_cell(entry: &FlatEntry) -> String {
 
 /// Build the base-view table rows from a flattened process list.
 ///
-/// Extracted from [`render_tree_view`] so each concern has a single home.
-/// Root entries with children show aggregate CPU and memory in parentheses.
+/// Group header rows are rendered as a single spanning cell with distinct
+/// background styling. Process rows use the normal multi-column layout.
 fn build_base_rows<'a>(
     flat_list: &'a [FlatEntry],
     palette: &Palette,
@@ -234,6 +234,25 @@ fn build_base_rows<'a>(
     flat_list
         .iter()
         .map(|entry| {
+            if let FlatEntryKind::GroupHeader {
+                slug,
+                session_count,
+                total_cost,
+                avg_context_fraction,
+                expanded,
+                ..
+            } = &entry.row_kind
+            {
+                return build_group_header_row(
+                    slug,
+                    *session_count,
+                    *total_cost,
+                    *avg_context_fraction,
+                    *expanded,
+                    palette,
+                    7, // base view has 7 columns
+                );
+            }
             let cmd = entry.info.cmd.join(" ");
             let tel = telemetry.get(&entry.info.pid);
             Row::new(vec![
@@ -250,6 +269,50 @@ fn build_base_rows<'a>(
         .collect()
 }
 
+/// Render a group header row spanning all columns.
+///
+/// The first cell holds the slug and rollup summary; all other cells are blank.
+/// A distinct background color distinguishes headers from process rows.
+fn build_group_header_row<'a>(
+    slug: &str,
+    session_count: usize,
+    total_cost: Option<f64>,
+    avg_ctx: Option<f32>,
+    expanded: bool,
+    palette: &Palette,
+    col_count: usize,
+) -> Row<'a> {
+    let indicator = if expanded { "\u{25bc} " } else { "\u{25b6} " }; // ▼ / ▶
+    let cost_str = total_cost
+        .map(|c| format!("${c:.2}"))
+        .unwrap_or_else(|| "\u{2013}".to_string()); // –
+    let ctx_str = avg_ctx
+        .map(|f| format!("ctx {:.0}% avg", f * 100.0))
+        .unwrap_or_else(|| "\u{2013}".to_string());
+
+    let header_text = format!(
+        "{}{:<40}  {} sessions \u{00b7} {} \u{00b7} {}",
+        indicator, slug, session_count, cost_str, ctx_str
+    );
+
+    let header_bg = if palette.is_light {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+    let header_style = Style::new()
+        .bg(header_bg)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut cells: Vec<Cell<'a>> = vec![Cell::from(header_text).style(header_style)];
+    // Fill remaining cells as blank so the background color spans the row.
+    for _ in 1..col_count {
+        cells.push(Cell::from("").style(Style::new().bg(header_bg)));
+    }
+    Row::new(cells)
+}
+
 /// Build the agent-view table rows.
 ///
 /// Columns: PID | Name | Status | Ctx% | Cost | Tokens | Tool | Uptime.
@@ -263,6 +326,27 @@ fn build_agent_rows<'a>(
     flat_list
         .iter()
         .map(|entry| {
+            // Group header row in agent view.
+            if let FlatEntryKind::GroupHeader {
+                slug,
+                session_count,
+                total_cost,
+                avg_context_fraction,
+                expanded,
+                ..
+            } = &entry.row_kind
+            {
+                return build_group_header_row(
+                    slug,
+                    *session_count,
+                    *total_cost,
+                    *avg_context_fraction,
+                    *expanded,
+                    palette,
+                    8, // agent view has 8 columns
+                );
+            }
+
             let pid = entry.info.pid;
             let tel = telemetry.get(&pid);
             let row_st = row_style(entry, palette);

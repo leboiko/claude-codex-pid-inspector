@@ -15,5 +15,6 @@ pub mod event;
 pub mod output;
 pub mod process;
 pub mod telemetry;
+pub mod terminals;
 pub mod tui;
 pub mod ui;

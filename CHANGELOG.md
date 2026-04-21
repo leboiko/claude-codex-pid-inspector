@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Curated focus filters** (`F` key, cycles): five lenses selectable in the
+  tree view — `all` (default, no filter), `attention` (status `NeedsInput` or
+  context ≥ 80%), `high-cpu` (CPU ≥ 30%), `high-context` (context ≥ 80%),
+  `recent` (started within the last 10 minutes). Pressing `F` clears the
+  free-text search; starting `/` input resets the lens to `all`. A filter pill
+  `FILTER: <label>  (N/M)` is now always visible in the status bar so the
+  active lens is always apparent.
+- **Project grouping** (`g` key, toggle): re-organises the tree view so all
+  sessions sharing the same working directory appear under a group header row
+  (`▼ project-slug   N sessions · $X.XX · ctx YY% avg`). Groups are sorted
+  most-recently-active first; empty groups (all members filtered out) are
+  hidden. `Space` or `Enter` on a header row collapses or expands the group.
+  Grouping, the curated filter, and the agent view (`T`) are independent
+  toggles.
+- **Help overlay** (`?` key): centered modal (70% × 80% terminal) listing all
+  keybindings in six categories — Navigation, View, Filter, Sort, Action,
+  System. `Esc` closes; any other bound key closes the overlay and then
+  executes the action.
+- **Terminal-tab jump** (`Tab` in detail view): focuses the terminal pane that
+  owns the selected process's TTY. Supported terminals: **tmux** (detected via
+  `$TMUX`), **Kitty** (via `$KITTY_WINDOW_ID`), **iTerm2** on macOS (via
+  `TERM_PROGRAM=iTerm.app`). **WezTerm** is detected but not yet implemented
+  (returns a descriptive message). A 3-second status-bar flash reports success
+  (`Jumped to tmux session:1.0`) or failure. The `Tab jump to terminal` footer
+  hint is shown only when a supported terminal is detected. `Tab` in the tree
+  view is unchanged (cycles sort column).
 - **Codex CLI telemetry** (Phase 3): each detected Codex CLI root process is
   now enriched with data read incrementally from its on-disk rollout file
   (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`). Exposed in the TUI,

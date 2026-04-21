@@ -35,6 +35,36 @@ pub struct ProcessNode {
     pub subtree_stats: SubtreeStats,
 }
 
+/// Discriminant for a [`FlatEntry`] row in the scrollable list.
+///
+/// Most rows are process rows. When project grouping is enabled, synthetic
+/// `GroupHeader` rows are inserted above each cwd group.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum FlatEntryKind {
+    /// An ordinary process row.
+    #[default]
+    Process,
+    /// A synthetic group header row inserted by project grouping.
+    ///
+    /// Contains the display slug, member count, aggregated cost, and average
+    /// context fraction for the group. The `info` field on the owning
+    /// [`FlatEntry`] is a placeholder and must not be rendered as a real process.
+    GroupHeader {
+        /// Truncated project path slug shown in the header.
+        slug: String,
+        /// Number of session (root) processes in this group.
+        session_count: usize,
+        /// Sum of `cost_usd` across group members that have one.
+        total_cost: Option<f64>,
+        /// Average `context_fraction` across group members that have one.
+        avg_context_fraction: Option<f32>,
+        /// Whether this group is currently expanded (children visible).
+        expanded: bool,
+        /// Key used to collapse/expand: the canonical cwd for this group.
+        cwd_key: String,
+    },
+}
+
 /// A single row in the flat, scrollable list derived from [`ProcessNode`] trees.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatEntry {
@@ -63,6 +93,11 @@ pub struct FlatEntry {
     /// been recorded (e.g. the very first tick). Injected by
     /// `App::rebuild_flat_list` alongside `activity`.
     pub activity_since: Option<Instant>,
+    /// Row kind: regular process row or a synthetic group header.
+    ///
+    /// Defaults to [`FlatEntryKind::Process`]; set to
+    /// [`FlatEntryKind::GroupHeader`] by the project-grouping pass.
+    pub row_kind: FlatEntryKind,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +243,7 @@ fn flatten_node(node: &ProcessNode, out: &mut Vec<FlatEntry>, is_last_sibling: b
         // Activity and activity_since are injected by App::rebuild_flat_list after flattening.
         activity: None,
         activity_since: None,
+        row_kind: FlatEntryKind::Process,
     });
 
     if node.expanded {

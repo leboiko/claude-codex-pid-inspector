@@ -49,4 +49,12 @@ pub enum Action {
     FilterBackspace,
     /// Toggle between the base process view and the agent telemetry view (bound to `t`).
     ToggleTelemetryView,
+    /// Cycle to the next curated focus filter (bound to `F`).
+    CycleFocusFilter,
+    /// Toggle project-group mode on/off (bound to `g`).
+    ToggleProjectGrouping,
+    /// Open or close the help overlay (bound to `?`).
+    ToggleHelp,
+    /// Jump to the terminal pane hosting the selected process (bound to `Tab` in detail view).
+    JumpToTerminal,
 }
